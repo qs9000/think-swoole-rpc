@@ -1,0 +1,48 @@
+{
+    "name": "qs9000/think-swoole-rpc",
+    "description": "A high-performance RPC client SDK for Think-Swoole with service discovery, load balancing, and circuit breaker",
+    "type": "library",
+    "keywords": [
+        "thinkphp",
+        "swoole",
+        "rpc",
+        "microservice",
+        "service-discovery",
+        "load-balancing",
+        "circuit-breaker"
+    ],
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "QS9000",
+            "email": "support@qs9000.com"
+        }
+    ],
+    "require": {
+        "php": ">=8.0",
+        "topthink/framework": "^8.1",
+        "topthink/think-swoole": "^4.1",
+        "ext-swoole": ">=4.2.9",
+        "ext-json": "*"
+    },
+    "autoload": {
+        "psr-4": {
+            "qs9000\\rpc\\": "src/"
+        }
+    },
+    "extra": {
+        "think": {
+            "services": [
+                "qs9000\\rpc\\ServiceProvider"
+            ],
+            "config":{
+                "rpc":"qs9000\\rpc\\config\\rpc.php"
+            }
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
