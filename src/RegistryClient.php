@@ -34,6 +34,9 @@ class RegistryClient
     /** @var string 基础 URL */
     protected string $baseUrl;
 
+    /** @var \CurlHandle|null cURL 句柄（复用） */
+    protected ?\CurlHandle $curlHandle = null;
+
     public function __construct(
         ?string $host = null,
         ?int $port = null,
@@ -49,6 +52,16 @@ class RegistryClient
         $this->port = $port ?? $config['port'] ?? 9500;
         $this->timeout = $timeout ?? $config['timeout'] ?? 5000;
         $this->baseUrl = "http://{$this->host}:{$this->port}";
+    }
+
+    /**
+     * 析构函数：释放 cURL 资源
+     */
+    public function __destruct()
+    {
+        if ($this->curlHandle !== null) {
+            curl_close($this->curlHandle);
+        }
     }
 
     /**
@@ -186,27 +199,44 @@ class RegistryClient
             $headers[] = "Authorization: Bearer {$this->token}";
         }
 
-        $ch = curl_init();
+        $ch = $this->getCurlHandle();
         curl_setopt_array($ch, [
             CURLOPT_URL => $url,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT_MS => $this->timeout,
             CURLOPT_CONNECTTIMEOUT_MS => min(1000, $this->timeout),
             CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_HTTPGET => true,
         ]);
 
         $body = curl_exec($ch);
         $error = curl_error($ch);
         $errno = curl_errno($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
 
         // cURL 错误
         if ($body === false || $errno !== 0) {
+            RpcLogger::error(
+                'RegistryClient network error',
+                [
+                    'method' => 'GET',
+                    'url' => $url,
+                    'errno' => $errno,
+                    'error' => $error ?: 'Unknown error',
+                    'timeout' => $this->timeout,
+                ]
+            );
+            
             return [
                 'success' => false,
                 'code' => -1,
-                'msg' => sprintf('Network error (errno: %d): %s', $errno, $error ?: 'Unknown error'),
+                'msg' => sprintf(
+                    'Network error (errno: %d): %s | URL: %s | Timeout: %dms',
+                    $errno,
+                    $error ?: 'Unknown error',
+                    $url,
+                    $this->timeout
+                ),
             ];
         }
 
@@ -231,7 +261,7 @@ class RegistryClient
 
         $body = json_encode($data, JSON_UNESCAPED_UNICODE);
         
-        $ch = curl_init();
+        $ch = $this->getCurlHandle();
         curl_setopt_array($ch, [
             CURLOPT_URL => $url,
             CURLOPT_RETURNTRANSFER => true,
@@ -246,18 +276,48 @@ class RegistryClient
         $error = curl_error($ch);
         $errno = curl_errno($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
 
         // cURL 错误
         if ($response === false || $errno !== 0) {
+            RpcLogger::error(
+                'RegistryClient network error',
+                [
+                    'method' => 'POST',
+                    'url' => $url,
+                    'errno' => $errno,
+                    'error' => $error ?: 'Unknown error',
+                    'timeout' => $this->timeout,
+                    'request_data_size' => strlen($body ?? ''),
+                ]
+            );
+            
             return [
                 'success' => false,
                 'code' => -1,
-                'msg' => sprintf('Network error (errno: %d): %s', $errno, $error ?: 'Unknown error'),
+                'msg' => sprintf(
+                    'Network error (errno: %d): %s | URL: %s | Timeout: %dms',
+                    $errno,
+                    $error ?: 'Unknown error',
+                    $url,
+                    $this->timeout
+                ),
             ];
         }
 
         return $this->parseResponse($response, $httpCode);
+    }
+
+    /**
+     * 获取或创建 cURL 句柄（复用）
+     *
+     * @return \CurlHandle
+     */
+    protected function getCurlHandle(): \CurlHandle
+    {
+        if ($this->curlHandle === null) {
+            $this->curlHandle = curl_init();
+        }
+        return $this->curlHandle;
     }
 
     /**

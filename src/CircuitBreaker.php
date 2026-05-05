@@ -109,9 +109,9 @@ class CircuitBreaker
                 $this->resetCounters($serviceName);
             }
         } elseif ($state === self::STATE_CLOSED) {
-            // 关闭状态下的成功，重置失败计数
-            $this->incrementSuccess($serviceName);
-            $this->decrementFailure($serviceName);
+            // 关闭状态下的成功，重置失败计数（而不是递减）
+            // 这样可以在连续成功后快速恢复，但不会因为偶尔的成功而掩盖问题
+            $this->resetFailureCount($serviceName);
         }
         // OPEN 状态下不会调用此方法
     }
@@ -281,19 +281,14 @@ class CircuitBreaker
         // 状态变更日志（可用于监控）
         if ($this->services[$serviceName]['state'] !== $state) {
             $oldState = $this->services[$serviceName]['state'];
-            $message = sprintf(
-                '[CircuitBreaker] Service "%s" state changed: %s → %s',
-                $serviceName,
-                $oldState,
-                $state
+            RpcLogger::info(
+                'CircuitBreaker state changed',
+                [
+                    'service' => $serviceName,
+                    'from' => $oldState,
+                    'to' => $state,
+                ]
             );
-            
-            // 使用 ThinkPHP Log facade（如果可用），否则降级到 error_log
-            if (class_exists('\think\facade\Log')) {
-                \think\facade\Log::info($message);
-            } else {
-                error_log($message);
-            }
         }
         
         $this->services[$serviceName]['state'] = $state;
@@ -315,18 +310,27 @@ class CircuitBreaker
     }
 
     /**
-     * 减少失败计数（成功后调用）
+     * 重置失败计数（成功后调用）
      *
+     * @param string $serviceName 服务名称
+     */
+    protected function resetFailureCount(string $serviceName): void
+    {
+        if (isset($this->services[$serviceName])) {
+            $this->services[$serviceName]['failures'] = 0;
+        }
+    }
+
+    /**
+     * 减少失败计数（已废弃，保留用于向后兼容）
+     *
+     * @deprecated 使用 resetFailureCount 代替
      * @param string $serviceName 服务名称
      */
     protected function decrementFailure(string $serviceName): void
     {
-        if (isset($this->services[$serviceName])) {
-            $this->services[$serviceName]['failures'] = max(
-                0,
-                $this->services[$serviceName]['failures'] - 1
-            );
-        }
+        // 保留此方法以兼容旧代码，但不再使用
+        $this->resetFailureCount($serviceName);
     }
 
     /**

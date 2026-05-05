@@ -29,6 +29,21 @@ use Throwable;
  */
 class SwooleRpcClient implements RpcClientInterface
 {
+    /** @var int 退避基数（微秒）- 100ms */
+    const BACKOFF_BASE_US = 100_000;
+    
+    /** @var int 最大退避时间（微秒）- 1s */
+    const BACKOFF_MAX_US = 1_000_000;
+    
+    /** @var int 最小超时时间（毫秒） */
+    const MIN_TIMEOUT_MS = 100;
+    
+    /** @var int 最大重试次数 */
+    const MAX_RETRY_TIMES = 5;
+    
+    /** @var int 最小重试次数 */
+    const MIN_RETRY_TIMES = 1;
+
     /** @var ServiceDiscovery 服务发现器 */
     protected ServiceDiscovery $discovery;
 
@@ -50,6 +65,9 @@ class SwooleRpcClient implements RpcClientInterface
     /** @var int 连接池最大连接数 */
     protected int $maxConnections = 20;
 
+    /** @var int 连接空闲超时时间（秒）- 超过此时间未使用的连接将被关闭 */
+    protected int $connectionIdleTimeout = 300; // 5分钟
+
     /** @var array 连接池 [instanceId => Client] */
     protected array $pools = [];
 
@@ -59,9 +77,13 @@ class SwooleRpcClient implements RpcClientInterface
     /** @var JsonParser JSON 解析器（复用避免重复创建） */
     protected JsonParser $parser;
 
+    /** @var Middleware|null 中间件管理器 */
+    protected ?Middleware $middleware = null;
+
     public function __construct(
         ?ServiceDiscovery $discovery = null,
-        ?CircuitBreaker $circuitBreaker = null
+        ?CircuitBreaker $circuitBreaker = null,
+        ?\think\App $app = null
     ) {
         $this->discovery = $discovery ?? new ServiceDiscovery();
         $this->circuitBreaker = $circuitBreaker ?? new CircuitBreaker();
@@ -74,6 +96,13 @@ class SwooleRpcClient implements RpcClientInterface
             $this->connectTimeout = (int) config('rpc.connection.connect_timeout', 1000);
             $this->retryTimes = (int) config('rpc.tries', 2);
             $this->maxConnections = (int) config('rpc.connection.max_connections', 20);
+            $this->connectionIdleTimeout = (int) config('rpc.connection.idle_timeout', 300);
+            
+            // 初始化中间件
+            $middlewares = config('rpc.middleware', []);
+            if (!empty($middlewares) && $app) {
+                $this->middleware = Middleware::make($app, $middlewares);
+            }
         }
 
         $this->discovery->setLoadBalancerStrategy($this->loadBalancer);
@@ -109,8 +138,90 @@ class SwooleRpcClient implements RpcClientInterface
             );
         }
 
-        // 3. 执行调用（带重试）
+        // 3. 如果有中间件，通过中间件管道执行
+        if ($this->middleware) {
+            return $this->callWithMiddleware($instance, $service, $method, $params, $version);
+        }
+
+        // 4. 直接执行调用（带重试）
         return $this->callWithRetry($instance, $service, $method, $params, $version);
+    }
+
+    /**
+     * 通过中间件管道执行调用
+     *
+     * @param ServiceInstanceInterface $instance 服务实例
+     * @param string $service 服务名称
+     * @param string $method 方法名
+     * @param array $params 参数
+     * @param string|null $version 版本号
+     * @return mixed
+     * @throws RpcException
+     */
+    protected function callWithMiddleware(
+        ServiceInstanceInterface $instance,
+        string $service,
+        string $method,
+        array $params,
+        ?string $version
+    ): mixed {
+        // 构建接口名
+        $interface = $version ? "{$service}.{$version}" : $service;
+        
+        // 创建协议对象
+        $protocol = Protocol::make($interface, $method, $params);
+
+        try {
+            // 通过中间件管道执行
+            $result = $this->middleware->pipeline()
+                ->then(function (Protocol $protocol) use ($instance, $service, $method, $version) {
+                    // 在中间件执行完毕后，实际调用服务
+                    return $this->executeCallWithProtocol(
+                        $instance,
+                        $protocol,
+                        $service,
+                        $method,
+                        $version
+                    );
+                })
+                ->send($protocol);
+
+            $this->circuitBreaker->recordSuccess($service);
+            return $result;
+            
+        } catch (RpcResponseException $e) {
+            $this->circuitBreaker->recordFailure($service);
+            throw $e;
+            
+        } catch (Throwable $e) {
+            $this->circuitBreaker->recordFailure($service);
+            throw $this->wrapException($e, $service, $method);
+        }
+    }
+
+    /**
+     * 使用协议对象执行调用
+     *
+     * @param ServiceInstanceInterface $instance 服务实例
+     * @param Protocol $protocol 协议对象
+     * @param string $service 服务名称
+     * @param string $method 方法名
+     * @param string|null $version 版本号
+     * @return mixed
+     * @throws Throwable
+     */
+    protected function executeCallWithProtocol(
+        ServiceInstanceInterface $instance,
+        Protocol $protocol,
+        string $service,
+        string $method,
+        ?string $version
+    ): mixed {
+        // 从协议对象获取参数
+        $params = $protocol->getParams();
+        
+        // 执行实际调用
+        return $this->executeCall($instance, $service, $method, $params, $version);
     }
 
     /**
@@ -309,7 +420,7 @@ class SwooleRpcClient implements RpcClientInterface
     }
 
     /**
-     * 接收并解包响应
+     * 接收并解包响应（改进的粘包处理）
      *
      * @param Client $client Swoole 客户端
      * @return string|false 解包后的数据
@@ -318,29 +429,56 @@ class SwooleRpcClient implements RpcClientInterface
     {
         $timeoutSec = $this->timeout / 1000;
         $startTime = microtime(true);
+        $buffer = '';
 
         while (true) {
             // 使用较短的超时时间进行轮询检查
             $data = $client->recv(0.1);
 
             if ($data !== false && strlen($data) > 0) {
+                // 累积数据到缓冲区
+                $buffer .= $data;
+                
                 // 尝试解包
-                $unpacked = Packer::unpack($data);
-                if (!empty($unpacked) && isset($unpacked[1])) {
-                    return $data;
+                try {
+                    $unpacked = Packer::unpack($buffer);
+                    if (!empty($unpacked) && isset($unpacked[1])) {
+                        // 成功解包，返回完整数据
+                        return $buffer;
+                    }
+                } catch (Throwable $e) {
+                    // 解包失败，可能是数据不完整，继续接收
+                    RpcLogger::debug(
+                        'Unpack failed, waiting for more data',
+                        ['error' => $e->getMessage(), 'buffer_length' => strlen($buffer)]
+                    );
                 }
                 
-                // 如果解包失败但收到了数据，可能是粘包，继续接收
-                // 注意：这里简化处理，实际生产环境可能需要更复杂的粘包处理
+                // 如果缓冲区过大（超过 10MB），可能是错误数据，放弃
+                if (strlen($buffer) > 10 * 1024 * 1024) {
+                    RpcLogger::warning(
+                        'Buffer size exceeded limit, discarding',
+                        ['buffer_length' => strlen($buffer)]
+                    );
+                    return false;
+                }
             }
 
             // 检查总超时
             if ((microtime(true) - $startTime) >= $timeoutSec) {
+                RpcLogger::warning(
+                    'Receive timeout',
+                    [
+                        'timeout' => $this->timeout,
+                        'buffer_length' => strlen($buffer),
+                    ]
+                );
                 return false;
             }
 
             // 检查连接状态
             if (!$client->isConnected()) {
+                RpcLogger::warning('Connection lost during receive');
                 return false;
             }
         }
@@ -361,14 +499,14 @@ class SwooleRpcClient implements RpcClientInterface
         if (isset($this->pools[$key])) {
             $client = $this->pools[$key];
             
-            // 检查连接是否健康
-            if ($client->isConnected()) {
+            // 检查连接是否健康且未超时
+            if ($client->isConnected() && !$this->isConnectionIdle($key)) {
                 // 更新最后使用时间
                 $this->connectionLastUsed[$key] = time();
                 return $client;
             }
             
-            // 连接已断开，清理
+            // 连接已断开或空闲超时，清理
             $this->removeConnection($key);
         }
 
@@ -379,6 +517,22 @@ class SwooleRpcClient implements RpcClientInterface
 
         // 3. 创建新连接
         return $this->createConnection($instance);
+    }
+
+    /**
+     * 检查连接是否空闲超时
+     *
+     * @param string $key 连接键
+     * @return bool true=已超时
+     */
+    protected function isConnectionIdle(string $key): bool
+    {
+        if (!isset($this->connectionLastUsed[$key])) {
+            return true;
+        }
+        
+        $idleTime = time() - $this->connectionLastUsed[$key];
+        return $idleTime > $this->connectionIdleTimeout;
     }
 
     /**
@@ -470,24 +624,64 @@ class SwooleRpcClient implements RpcClientInterface
             return;
         }
         
-        // 基于最后使用时间驱逐最旧的连接
-        $oldestKey = null;
-        $oldestTime = PHP_INT_MAX;
+        // 首先清理所有空闲超时的连接
+        $this->cleanupIdleConnections();
+        
+        // 如果清理后仍然超过限制，再驱逐最旧的连接
+        if (count($this->pools) >= $this->maxConnections) {
+            $oldestKey = null;
+            $oldestTime = PHP_INT_MAX;
+            
+            foreach ($this->connectionLastUsed as $key => $lastUsed) {
+                if ($lastUsed < $oldestTime && isset($this->pools[$key])) {
+                    $oldestTime = $lastUsed;
+                    $oldestKey = $key;
+                }
+            }
+            
+            // 如果没有找到记录，则移除第一个连接（向后兼容）
+            if ($oldestKey === null) {
+                $oldestKey = array_key_first($this->pools);
+            }
+            
+            if ($oldestKey !== null) {
+                $this->removeConnection($oldestKey);
+            }
+        }
+    }
+
+    /**
+     * 清理所有空闲超时的连接
+     */
+    protected function cleanupIdleConnections(): void
+    {
+        $now = time();
+        $cleanedCount = 0;
         
         foreach ($this->connectionLastUsed as $key => $lastUsed) {
-            if ($lastUsed < $oldestTime && isset($this->pools[$key])) {
-                $oldestTime = $lastUsed;
-                $oldestKey = $key;
+            $idleTime = $now - $lastUsed;
+            
+            if ($idleTime > $this->connectionIdleTimeout && isset($this->pools[$key])) {
+                $this->removeConnection($key);
+                $cleanedCount++;
+                
+                if (RpcLogger::isDebug()) {
+                    RpcLogger::debug(
+                        'Cleaned up idle connection',
+                        [
+                            'key' => $key,
+                            'idle_time' => $idleTime,
+                        ]
+                    );
+                }
             }
         }
         
-        // 如果没有找到记录，则移除第一个连接（向后兼容）
-        if ($oldestKey === null) {
-            $oldestKey = array_key_first($this->pools);
-        }
-        
-        if ($oldestKey !== null) {
-            $this->removeConnection($oldestKey);
+        if ($cleanedCount > 0 && RpcLogger::isDebug()) {
+            RpcLogger::debug(
+                'Cleaned up idle connections',
+                ['count' => $cleanedCount]
+            );
         }
     }
 
@@ -544,9 +738,7 @@ class SwooleRpcClient implements RpcClientInterface
      */
     protected function calculateBackoff(int $attempt): int
     {
-        $base = 100_000;    // 100ms
-        $max = 1_000_000;   // 1s
-        return (int) min($base * pow(2, $attempt), $max);
+        return (int) min(self::BACKOFF_BASE_US * pow(2, $attempt), self::BACKOFF_MAX_US);
     }
 
     /**
@@ -557,7 +749,7 @@ class SwooleRpcClient implements RpcClientInterface
      */
     public function setTimeout(int $timeout): self
     {
-        $this->timeout = max(100, $timeout); // 最小 100ms
+        $this->timeout = max(self::MIN_TIMEOUT_MS, $timeout);
         return $this;
     }
 
@@ -569,7 +761,7 @@ class SwooleRpcClient implements RpcClientInterface
      */
     public function setConnectTimeout(int $timeout): self
     {
-        $this->connectTimeout = max(100, $timeout);
+        $this->connectTimeout = max(self::MIN_TIMEOUT_MS, $timeout);
         return $this;
     }
 
@@ -594,7 +786,7 @@ class SwooleRpcClient implements RpcClientInterface
      */
     public function setRetryTimes(int $times): self
     {
-        $this->retryTimes = max(1, min(5, $times)); // 限制在 1-5 次
+        $this->retryTimes = max(self::MIN_RETRY_TIMES, min(self::MAX_RETRY_TIMES, $times));
         return $this;
     }
 
@@ -607,6 +799,18 @@ class SwooleRpcClient implements RpcClientInterface
     public function setMaxConnections(int $maxConnections): self
     {
         $this->maxConnections = max(1, $maxConnections);
+        return $this;
+    }
+
+    /**
+     * 设置连接空闲超时时间
+     *
+     * @param int $timeout 空闲超时时间（秒）
+     * @return self
+     */
+    public function setConnectionIdleTimeout(int $timeout): self
+    {
+        $this->connectionIdleTimeout = max(60, $timeout); // 最小 60 秒
         return $this;
     }
 
@@ -631,19 +835,93 @@ class SwooleRpcClient implements RpcClientInterface
     }
 
     /**
+     * 获取中间件管理器
+     *
+     * @return Middleware|null
+     */
+    public function getMiddleware(): ?Middleware
+    {
+        return $this->middleware;
+    }
+
+    /**
+     * 设置中间件管理器
+     *
+     * @param Middleware $middleware
+     * @return self
+     */
+    public function setMiddleware(Middleware $middleware): self
+    {
+        $this->middleware = $middleware;
+        return $this;
+    }
+
+    /**
+     * 添加中间件
+     *
+     * @param mixed $middleware 中间件类名、数组或闭包
+     * @return self
+     */
+    public function middleware(mixed $middleware): self
+    {
+        if (!$this->middleware) {
+            // 如果没有初始化中间件，创建一个空的
+            $this->middleware = new Middleware();
+        }
+        
+        $this->middleware->add($middleware);
+        return $this;
+    }
+
+    /**
+     * 批量添加中间件
+     *
+     * @param array $middlewares
+     * @return self
+     */
+    public function use(array $middlewares): self
+    {
+        if (!$this->middleware) {
+            $this->middleware = new Middleware();
+        }
+        
+        $this->middleware->use($middlewares);
+        return $this;
+    }
+
+    /**
      * 获取连接池统计信息
      *
      * @return array
      */
     public function getPoolStats(): array
     {
+        $now = time();
+        $activeCount = 0;
+        $idleCount = 0;
+        
+        foreach ($this->pools as $key => $client) {
+            if ($client->isConnected()) {
+                $activeCount++;
+                
+                // 检查是否空闲
+                if (isset($this->connectionLastUsed[$key])) {
+                    $idleTime = $now - $this->connectionLastUsed[$key];
+                    if ($idleTime > $this->connectionIdleTimeout) {
+                        $idleCount++;
+                    }
+                }
+            }
+        }
+        
         return [
             'total_connections' => count($this->pools),
             'max_connections' => $this->maxConnections,
-            'active_connections' => count(array_filter(
-                $this->pools,
-                fn(Client $client) => $client->isConnected()
-            )),
+            'active_connections' => $activeCount,
+            'idle_connections' => $idleCount,
+            'utilization_rate' => count($this->pools) > 0 
+                ? round(($activeCount / count($this->pools)) * 100, 2) 
+                : 0,
         ];
     }
 

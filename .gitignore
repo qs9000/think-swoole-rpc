@@ -1,7 +1,8 @@
 # Composer
 /vendor/
 composer.lock
-
+/examples/
+/tests/
 # IDE
 /.idea/
 /.vscode/

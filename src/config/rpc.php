@@ -213,4 +213,34 @@ return [
         // 是否自动绑定 rpc.php 中声明的接口
         'auto_bind' => (bool) env('RPC_AUTO_BIND_INTERFACES', true),
     ],
+
+    // ========================================
+    // 中间件配置 (Middleware)
+    // ========================================
+    // 参考 think-swoole 的设计，中间件只需要类名
+    // 用户自己在中间件的 handle 方法中通过 $protocol 对象读取/写入参数
+    'middleware' => [
+        // 全局中间件列表（所有 RPC 调用都会执行）
+        // \qs9000\rpc\middleware\InjectParamsMiddleware::class,
+        // \qs9000\rpc\middleware\AuthMiddleware::class,
+    ],
+
+    // ========================================
+    // 中间件参数配置 (Middleware Parameters)
+    // ========================================
+    // 中间件从这里读取配置参数，而不是在 middleware 数组中传递
+    'middleware_params' => [
+        // 参数注入中间件的配置
+        'inject' => [
+            // 在这里配置需要注入的公共参数
+            // 'app_id' => 'my_app',
+            // 'version' => '1.0.0',
+        ],
+        
+        // 认证中间件的配置
+        'auth' => [
+            'token' => env('RPC_AUTH_TOKEN', ''),
+            'field' => 'auth_token',  // 字段名
+        ],
+    ],
 ];

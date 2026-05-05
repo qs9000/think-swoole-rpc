@@ -93,6 +93,12 @@ class ServiceDiscovery
      */
     public function getInstances(string $serviceName): array
     {
+        // 定期清理过期缓存（每100次调用清理一次）
+        static $callCount = 0;
+        if (++$callCount % 100 === 0) {
+            $this->cleanupExpiredCache();
+        }
+
         // 1. 尝试从缓存获取
         if ($this->hasValidCache($serviceName)) {
             return $this->getCachedInstances($serviceName);
@@ -108,18 +114,13 @@ class ServiceDiscovery
             }
         } catch (\Throwable $e) {
             // 记录错误但不中断服务
-            $message = sprintf(
-                '[ServiceDiscovery] Failed to fetch instances for %s: %s',
-                $serviceName,
-                $e->getMessage()
+            RpcLogger::warning(
+                'Failed to fetch instances for service',
+                [
+                    'service' => $serviceName,
+                    'error' => $e->getMessage(),
+                ]
             );
-            
-            // 使用 ThinkPHP Log facade（如果可用），否则降级到 error_log
-            if (class_exists('\think\facade\Log')) {
-                \think\facade\Log::warning($message);
-            } else {
-                error_log($message);
-            }
         }
 
         // 3. 网络失败时，使用过期缓存（降级策略）
@@ -142,14 +143,10 @@ class ServiceDiscovery
             $response = $this->registryClient->getServices();
             return ($response['success'] ?? false) ? ($response['data'] ?? []) : [];
         } catch (\Throwable $e) {
-            $message = '[ServiceDiscovery] Failed to get services: ' . $e->getMessage();
-            
-            // 使用 ThinkPHP Log facade（如果可用），否则降级到 error_log
-            if (class_exists('\think\facade\Log')) {
-                \think\facade\Log::warning($message);
-            } else {
-                error_log($message);
-            }
+            RpcLogger::warning(
+                'Failed to get services list',
+                ['error' => $e->getMessage()]
+            );
             
             return [];
         }
@@ -167,18 +164,13 @@ class ServiceDiscovery
             $response = $this->registryClient->getService($serviceName);
             return ($response['success'] ?? false) ? ($response['data'] ?? []) : [];
         } catch (\Throwable $e) {
-            $message = sprintf(
-                '[ServiceDiscovery] Failed to get service %s: %s',
-                $serviceName,
-                $e->getMessage()
+            RpcLogger::warning(
+                'Failed to get service details',
+                [
+                    'service' => $serviceName,
+                    'error' => $e->getMessage(),
+                ]
             );
-            
-            // 使用 ThinkPHP Log facade（如果可用），否则降级到 error_log
-            if (class_exists('\think\facade\Log')) {
-                \think\facade\Log::warning($message);
-            } else {
-                error_log($message);
-            }
             
             return [];
         }
@@ -227,6 +219,30 @@ class ServiceDiscovery
     public function clearAllCache(): void
     {
         $this->localCache = [];
+    }
+
+    /**
+     * 清理过期缓存
+     * 
+     * 移除超过 TTL 两倍的缓存项，防止内存泄漏
+     */
+    protected function cleanupExpiredCache(): void
+    {
+        $now = time();
+        $maxAge = $this->cacheTtl * 2; // 允许的最大缓存年龄
+        
+        foreach ($this->localCache as $serviceName => $cache) {
+            if ($now - $cache['timestamp'] >= $maxAge) {
+                unset($this->localCache[$serviceName]);
+                
+                if (RpcLogger::isDebug()) {
+                    RpcLogger::debug(
+                        'Cleaned up expired cache',
+                        ['service' => $serviceName]
+                    );
+                }
+            }
+        }
     }
 
     /**
