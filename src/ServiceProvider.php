@@ -203,8 +203,8 @@ class ServiceProvider extends Service
      */
     protected function registerServices(): void
     {
-        // RegistryClient - 注册中心客户端（使用 singleton）
-        $this->app->singleton(RegistryClient::class, function (App $app) {
+        // RegistryClient - 注册中心客户端（使用 bind 实现单例）
+        $this->app->bind(RegistryClient::class, function (App $app) {
             $config = $app->config->get('rpc.registry', []);
             
             $instance = new RegistryClient(
@@ -219,10 +219,10 @@ class ServiceProvider extends Service
             }
             
             return $instance;
-        });
+        }, true); // 第三个参数 true 表示单例
 
-        // ServiceDiscovery - 服务发现器（使用 singleton）
-        $this->app->singleton(ServiceDiscovery::class, function (App $app) {
+        // ServiceDiscovery - 服务发现器（使用 bind 实现单例）
+        $this->app->bind(ServiceDiscovery::class, function (App $app) {
             $registryClient = $app->get(RegistryClient::class);
             $discoveryConfig = $app->config->get('rpc.discovery', []);
             
@@ -239,13 +239,13 @@ class ServiceProvider extends Service
             }
             
             return $instance;
-        });
+        }, true); // 第三个参数 true 表示单例
 
-        // CircuitBreaker - 熔断器（使用 singleton）
-        $this->app->singleton(CircuitBreaker::class, function (App $app) {
+        // CircuitBreaker - 熔断器（使用 bind 实现单例）
+        $this->app->bind(CircuitBreaker::class, function (App $app) {
             $config = $app->config->get('rpc.circuitbreaker', []);
             return new CircuitBreaker($config);
-        });
+        }, true); // 第三个参数 true 表示单例
     }
 
     /**
@@ -258,7 +258,7 @@ class ServiceProvider extends Service
      */
     protected function registerDiscoveryGateway(): void
     {
-        $this->app->singleton(DiscoveryGateway::class, function (App $app) {
+        $this->app->bind(DiscoveryGateway::class, function (App $app) {
             $discovery = $app->get(ServiceDiscovery::class);
             $circuitBreaker = $app->get(CircuitBreaker::class);
             $config = $app->config->get('rpc', []);
@@ -271,7 +271,7 @@ class ServiceProvider extends Service
                 $config['tries'] ?? 2,
                 $config['connection']['connect_timeout'] ?? 1
             );
-        });
+        }, true); // 第三个参数 true 表示单例
     }
 
     /**
