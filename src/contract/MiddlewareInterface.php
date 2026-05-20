@@ -19,8 +19,8 @@ interface MiddlewareInterface
      * 处理请求
      *
      * @param Protocol $protocol RPC协议对象
-     * @param callable $next 下一个处理者
+     * @param \Closure $next 下一个处理者
      * @return mixed
      */
-    public function handle(Protocol $protocol, callable $next): mixed;
+    public function handle(Protocol $protocol, \Closure $next): mixed;
 }

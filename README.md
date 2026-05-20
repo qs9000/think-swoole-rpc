@@ -1,637 +1,339 @@
-# Think-Swoole RPC Client SDK
+# qs9000/think-swoole-rpc - 基于 ThinkPHP + Swoole 的高性能 RPC 框架
 
-[![PHP Version](https://img.shields.io/badge/php-%3E%3D8.0-blue.svg)](https://php.net)
-[![ThinkPHP](https://img.shields.io/badge/thinkphp-8.x-red.svg)](https://www.thinkphp.cn)
-[![Swoole](https://img.shields.io/badge/swoole-%3E%3D4.2.9-orange.svg)](https://www.swoole.com)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](CHANGELOG.md)
+## 📖 简介
 
-**企业级高性能 ThinkPHP 8 + Swoole RPC 客户端 SDK**
-
-专为微服务架构设计，提供服务发现、智能负载均衡、熔断保护、中间件系统等完整解决方案。
+`qs9000/think-swoole-rpc` 是一个为 ThinkPHP 8 + Swoole 环境设计的企业级 RPC 框架，提供完整的服务注册与发现、负载均衡、熔断保护、连接池管理、中间件支持等微服务核心能力。
+本项目是我的自用项目，若需要使用，请自行检查和修改适配。
 
 ---
 
-## 🌟 核心特性
+## ✨ 核心特性
 
-### 🚀 高性能
-- **协程驱动**：基于 Swoole 协程实现非阻塞 I/O
-- **连接池管理**：TCP 长连接复用，减少握手开销
-- **智能重试**：失败自动切换实例，指数退避策略
-
-### 🔍 服务发现
-- **动态注册**：从注册中心自动获取服务实例
-- **本地缓存**：可配置 TTL，减少网络请求
-- **优雅降级**：注册中心不可用时使用缓存
-
-### ⚖️ 负载均衡
-- **5 种策略**：随机、轮询、最少连接、权重、一致性哈希
-- **可扩展**：支持自定义负载均衡算法
-
-### 🛡️ 熔断保护
-- **三态状态机**：CLOSED → OPEN → HALF_OPEN
-- **快速失败**：避免雪崩效应
-- **自动恢复**：半开状态探测服务恢复
-
-### 🔌 中间件系统
-- **灵活扩展**：在请求前后执行自定义逻辑
-- **简单配置**：只需类名，无需复杂配置
-- **直接操作**：通过 `$protocol` 对象读写参数
-- **内置中间件**：参数注入、认证等常用功能
-
-### 🔒 安全防护
-- **TLS/SSL**：端到端加密传输
-- **请求签名**：HMAC-SHA256 防篡改
-- **Token 认证**：注册中心身份验证
-
-### 📦 双协议支持
-- **TCP (Swoole)**：高性能协程客户端
-- **HTTP**：标准 HTTP 客户端，跨语言调用
-
----
-
-## 📋 目录
-
-- [安装](#-安装)
-- [快速开始](#-快速开始)
-- [基础使用](#-基础使用)
-- [中间件系统](#-中间件系统)
-- [配置指南](#-配置指南)
-- [高级特性](#-高级特性)
-- [最佳实践](#-最佳实践)
-- [常见问题](#-常见问题)
-- [文档索引](#-文档索引)
-- [贡献指南](#-贡献指南)
+- **服务注册与发现**：支持注册中心（HTTP/RPC 双协议），服务自动注册、心跳保活、优雅下线。
+- **多种负载均衡策略**：随机、轮询、加权轮询（平滑加权）、一致性哈希、最少连接（需自行扩展）。
+- **熔断器**：基于状态的熔断保护（CLOSED → OPEN → HALF_OPEN），防止级联故障。
+- **连接池**：基于 Swoole 协程的高效连接复用，支持最小/最大连接数、空闲检测。
+- **中间件体系**：客户端/服务端均支持中间件，内置认证（HMAC-SHA256 签名）、限流（固定窗口）、链路追踪（traceId 传递）。
+- **服务缓存**：服务发现结果本地缓存（TTL 可配置），降低注册中心压力。
+- **安全性**：请求签名、时间戳防重放、可配置的认证/限流规则。
+- **易于扩展**：负载均衡策略、注册中心客户端、中间件均可自定义。
 
 ---
 
 ## 📦 安装
 
-### 系统要求
+### 环境要求
 
-- PHP >= 8.0
-- ThinkPHP 8.x
-- Swoole >= 4.2.9
-- ext-json
+- PHP 8.0+
+- Swoole 4.8+（推荐 5.0+）
+- ThinkPHP 8.0+
+- 注册中心（需实现对应 API，可自行开发或使用第三方如 Nacos）
 
-### Composer 安装
+### 通过 Composer 安装
 
 ```bash
 composer require qs9000/think-swoole-rpc
 ```
 
+### 发布配置文件
+
+框架会自动加载配置，你也可以手动发布配置文件到 `config/` 目录（具体命令视包设计而定，若无则手动创建）。
+
 ---
 
-## 🚀 快速开始
+## ⚙️ 配置
 
-### 1. 注册服务提供者
-
-在 `app/provider.php` 中添加：
+### 1. 基础配置文件 `config/rpc.php`
 
 ```php
+<?php
+
 return [
-    'providers' => [
-        qs9000\rpc\ServiceProvider::class,
+    // 注册中心配置
+    'registry' => [
+        'host' => '127.0.0.1',          // 注册中心地址
+        'port' => 9000,                 // 注册中心端口
+        'timeout' => 5000,              // 请求超时(ms)
+        'exclude_private' => false,     // 是否优先使用公网IP注册
+        'rpc' => [                      // RPC 服务注册配置
+            'enable' => true,
+            'method' => 'rpc',          // rpc 或 http
+            'heartbeat_interval' => 30, // 心跳间隔(秒)
+        ],
+        'server' => [                   // 服务器信息注册(可选)
+            'enable' => true,
+            'method' => 'rpc',
+        ],
+    ],
+
+    // 客户端服务发现配置
+    'discovery' => [
+        'cache' => 'file',              // 缓存驱动
+        'cache_ttl' => 30,              // 缓存 TTL(秒)
+        'loadbalancer' => 'weight',     // 负载均衡策略: random/roundrobin/weight/consistenthash
+        'strategies' => [
+            // 自定义策略可在此注册
+        ],
+    ],
+
+    // RPC 客户端配置
+    'client' => [
+        'tries' => 2,                   // 失败重试次数
+        'pool' => [                     // 连接池配置
+            'min_active' => 0,
+            'max_active' => 10,
+            'max_wait_time' => 5,
+            'max_idle_time' => 20,
+            'idle_check_interval' => 10,
+        ],
+        'middleware' => [
+            \qs9000\rpc\middleware\RpcClientAuth::class,
+            \qs9000\rpc\middleware\RpcClientInjectRequest::class,
+        ],
+        'circuitbreaker' => [           // 熔断器配置
+            'failure_threshold' => 5,   // 连续失败多少次开启熔断
+            'success_threshold' => 3,   // 半开状态连续成功多少次关闭
+            'timeout' => 60,            // 熔断超时(秒)
+        ],
+        'auth' => [
+            'secret' => env('RPC_CLIENT_SECRET'), // 可选，建议用环境变量
+        ],
+    ],
+
+    // RPC 服务端配置
+    'server' => [
+        'auth' => [
+            'enable' => false,
+            'secret' => env('RPC_SERVER_SECRET'),
+            'auth_class' => null,       // 自定义认证类
+        ],
+        'rate_limit' => [
+            'enable' => false,
+            'cache' => 'file',
+            'limit' => 100,             // 限制次数
+            'interval' => 60,           // 时间窗口(秒)
+            'limit_class' => null,      // 自定义限流类
+        ],
     ],
 ];
 ```
 
-### 2. 配置环境变量
+### 2. 环境变量 `.env` 配置（认证密钥）
 
-创建或编辑 `.env` 文件：
+```env
+# 客户端认证密钥（与后端约定的共享密钥）
+RPC_SECRET_MYAPP=your-secure-secret-key
 
-```bash
-# 注册中心地址
-RPC_REGISTRY_HOST=127.0.0.1
-RPC_REGISTRY_PORT=9500
+# 服务端认证密钥（如果启用 auth.enable）
+RPC_SERVER_SECRET=your-secure-secret-key
+```
+> `MYAPP` 为 `config('app.name')` 的大写形式。
 
-# 负载均衡策略
-RPC_LOADBALANCER=random
+### 3. 服务映射文件 `根目录/rpc.php`
 
-# 超时和重试
-RPC_TIMEOUT=5
-RPC_RETRIES=2
+此文件用于声明客户端需要调用的远程服务接口。
+
+```php
+<?php
+// 文件位置：项目根目录/rpc.php
+return [
+    'UserService'   => \app\rpc\UserServiceInterface::class,
+    'OrderService'  => \app\rpc\OrderServiceInterface::class,
+];
 ```
 
-### 3. 使用客户端
+### 4. 服务提供者注册
+
+在 `config/service.php` 中添加：
+
+```php
+<?php
+return [
+    \qs9000\rpc\RpcClientService::class,
+];
+```
+
+---
+
+## 🚀 使用指南
+
+### 一、作为 RPC 服务端
+
+#### 1. 定义服务接口与实现
+
+```php
+// 接口定义
+namespace app\rpc;
+interface UserServiceInterface
+{
+    public function getUserInfo(int $uid): array;
+}
+
+// 实现类
+namespace app\rpc\service;
+use app\rpc\UserServiceInterface;
+class UserService implements UserServiceInterface
+{
+    public function getUserInfo(int $uid): array
+    {
+        // 业务逻辑
+        return ['uid' => $uid, 'name' => 'user' . $uid];
+    }
+}
+```
+
+#### 2. 注册服务到 Swoole 配置
+
+在 `config/swoole.php` 中添加 RPC 服务配置：
+
+```php
+'servers' => [
+    // ...
+    'rpc' => [
+        'host' => '0.0.0.0',
+        'port' => 9501,
+        'services' => [
+            'UserService' => \app\rpc\UserServiceInterface::class,
+            // 可注册多个服务
+        ],
+        'weight' => 100,
+        'metadata' => ['version' => '1.0'],
+    ],
+],
+```
+
+#### 3. 启动 Swoole 服务
+
+```bash
+php think swoole:start
+```
+
+服务端会自动向注册中心注册本机提供的服务，并定时发送心跳。
+
+### 二、作为 RPC 客户端
+
+#### 1. 定义客户端接口（与服务端一致）
+
+```php
+namespace app\rpc;
+interface UserServiceInterface
+{
+    public function getUserInfo(int $uid): array;
+}
+```
+
+#### 2. 在控制器中注入使用
 
 ```php
 <?php
 namespace app\controller;
 
-use qs9000\rpc\SwooleRpcClient;
+use app\rpc\UserServiceInterface;
 
 class UserController
 {
-    protected SwooleRpcClient $rpcClient;
-    
-    public function __construct(SwooleRpcClient $rpcClient)
+    public function index(UserServiceInterface $userService)
     {
-        $this->rpcClient = $rpcClient;
-    }
-    
-    public function getUser(int $id)
-    {
-        try {
-            $result = $this->rpcClient->call(
-                'UserService',    // 服务名称
-                'getUser',         // 方法名
-                ['id' => $id]     // 参数
-            );
-            
-            return json(['code' => 0, 'data' => $result]);
-        } catch (\Throwable $e) {
-            return json(['code' => -1, 'message' => $e->getMessage()]);
-        }
+        $result = $userService->getUserInfo(123);
+        return json($result);
     }
 }
 ```
 
----
+#### 3. 调用流程
 
-## 💻 基础使用
-
-### 基本调用
-
-```php
-// 同步调用
-$result = $client->call('UserService', 'getUser', ['id' => 1]);
-
-// 带版本号
-$result = $client->call('UserService', 'getUser', ['id' => 1], 'v2');
-```
-
-### 错误处理
-
-```php
-use think\swoole\exception\RpcClientException;
-use think\swoole\exception\RpcResponseException;
-use qs9000\rpc\RpcException;
-
-try {
-    $result = $client->call('UserService', 'getUser', ['id' => 1]);
-    
-} catch (RpcResponseException $e) {
-    // 业务逻辑错误（不应重试）
-    echo "业务错误: " . $e->getMessage();
-    
-} catch (RpcClientException $e) {
-    // 网络错误（会自动重试）
-    echo "网络错误: " . $e->getMessage();
-    
-} catch (RpcException $e) {
-    // 熔断器开启或服务不可用
-    if ($e->getCode() === -32000) {
-        echo "服务熔断，请稍后重试";
-    } elseif ($e->getCode() === -32001) {
-        echo "无可用服务实例";
-    }
-}
-```
-
-### 自定义配置
-
-```php
-// 设置超时时间（毫秒）
-$client->setTimeout(10000);
-
-// 设置重试次数
-$client->setRetryTimes(3);
-
-// 切换负载均衡策略
-$client->setLoadBalancer('roundrobin');
-```
+- 根据 `rpc.php` 中的服务名 `UserService` 进行服务发现。
+- 从注册中心获取可用实例列表（本地缓存 TTL 30 秒）。
+- 通过负载均衡选择一个实例。
+- 检查熔断器状态，允许则从连接池借用连接。
+- 发送请求，记录成功/失败，自动重试（tries=2）。
 
 ---
 
-## 🔌 中间件系统
+## 🧩 高级特性
 
-中间件允许你在 RPC 请求前后执行自定义逻辑，如添加公共参数、认证信息、链路追踪等。
+### 1. 自定义负载均衡策略
 
-### 核心设计理念
-
-> **用户自己在中间件的 `handle` 方法中通过 `$protocol` 对象来读取/写入参数**
-
-### 使用方式
-
-#### 1. 配置方式（推荐）
+实现 `LoadBalancerInterface`，并在 `config/rpc.discovery.strategies` 注册：
 
 ```php
-// config/rpc.php
-return [
+'strategies' => [
+    'custom' => \app\rpc\loadbalancer\CustomLoadBalancer::class,
+],
+```
+
+### 2. 自定义中间件
+
+实现 `MiddlewareInterface`，并在配置中启用：
+
+```php
+// 客户端中间件
+'client' => [
     'middleware' => [
-        \app\middleware\TraceMiddleware::class,
-        \app\middleware\AuthMiddleware::class,
+        \app\rpc\middleware\CustomMiddleware::class,
     ],
 ];
+// 服务端中间件同理
 ```
 
-#### 2. 代码方式（带参数）
+### 3. 熔断器监控
 
 ```php
-use qs9000\rpc\middleware\InjectParamsMiddleware;
-use qs9000\rpc\middleware\AuthMiddleware;
-
-$client = app(SwooleRpcClient::class);
-
-// 添加参数注入中间件
-$client->middleware([InjectParamsMiddleware::class, [
-    'app_id' => 'my_app',
-    'version' => '1.0.0',
-]]);
-
-// 添加认证中间件
-$client->middleware([AuthMiddleware::class, [
-    env('RPC_AUTH_TOKEN', ''),
-    'api_key'
-]]);
+$circuitBreaker = app(\qs9000\rpc\CircuitBreaker::class);
+$stats = $circuitBreaker->getStats('UserService_192.168.1.1:9501');
 ```
 
-#### 3. 闭包方式
+### 4. 手动清除服务发现缓存
 
 ```php
-$client->middleware(function ($protocol, $next) {
-    // 添加追踪 ID
-    $params = $protocol->getParams();
-    $params['trace_id'] = uniqid('trace_', true);
-    $protocol->setParams($params);
-    
-    // 执行调用
-    $result = $next($protocol);
-    
-    return $result;
-});
+$discover = app(\qs9000\rpc\ServiceDiscover::class);
+$discover->clearCache('UserService');
 ```
-
-### 自定义中间件
-
-```php
-<?php
-namespace app\middleware;
-
-use qs9000\rpc\contract\MiddlewareInterface;
-use think\App;
-use think\swoole\rpc\Protocol;
-
-class CustomMiddleware implements MiddlewareInterface
-{
-    protected App $app;
-    protected string $customParam;
-
-    public function __construct(App $app, string $customParam = 'default')
-    {
-        $this->app = $app;
-        $this->customParam = $customParam;
-    }
-
-    public function handle(Protocol $protocol, callable $next): mixed
-    {
-        // === 请求前处理 ===
-        
-        // 直接操作 Protocol 对象
-        $params = $protocol->getParams();
-        $params['custom_field'] = $this->customParam;
-        $protocol->setParams($params);
-        
-        // 执行后续中间件或实际调用
-        $result = $next($protocol);
-        
-        // === 响应后处理 ===
-        
-        return $result;
-    }
-}
-```
-
-### 内置中间件
-
-#### InjectParamsMiddleware - 参数注入
-
-自动为所有请求添加公共参数：
-
-```php
-$client->middleware([InjectParamsMiddleware::class, [
-    'app_id' => 'my_app',
-    'version' => '1.0.0',
-    'caller_ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown',
-]]);
-```
-
-#### AuthMiddleware - 认证中间件
-
-自动添加认证 Token：
-
-```php
-// 指定 token 和字段名
-$client->middleware([AuthMiddleware::class, [
-    'secret_token_123',
-    'api_key'
-]]);
-
-// 或从环境变量读取
-$client->middleware([AuthMiddleware::class, ['', 'api_key']]);
-```
-
-### 常见应用场景
-
-#### 链路追踪
-
-```php
-$client->middleware(function ($protocol, $next) {
-    $params = $protocol->getParams();
-    $params['trace_id'] = request()->header('X-Trace-Id') ?: uniqid();
-    $params['span_id'] = uniqid('span_', true);
-    $protocol->setParams($params);
-    return $next($protocol);
-});
-```
-
-#### 性能监控
-
-```php
-$client->middleware(function ($protocol, $next) {
-    $start = microtime(true);
-    
-    try {
-        $result = $next($protocol);
-        
-        $duration = (microtime(true) - $start) * 1000;
-        if ($duration > 1000) {
-            trace("慢查询: {$duration}ms", 'warning');
-        }
-        
-        return $result;
-    } catch (\Throwable $e) {
-        $duration = (microtime(true) - $start) * 1000;
-        trace("RPC 错误: {$e->getMessage()} ({$duration}ms)", 'error');
-        throw $e;
-    }
-});
-```
-
-📖 **详细文档**：[MIDDLEWARE_USAGE.md](MIDDLEWARE_USAGE.md)  
-⚡ **快速参考**：[MIDDLEWARE_QUICK_REFERENCE.md](MIDDLEWARE_QUICK_REFERENCE.md)
 
 ---
 
-## ⚙️ 配置指南
+## 📂 目录结构
 
-### 完整配置示例
-
-```php
-<?php
-// config/rpc.php
-return [
-    // 注册中心配置
-    'registry' => [
-        'host' => env('RPC_REGISTRY_HOST', '127.0.0.1'),
-        'port' => (int) env('RPC_REGISTRY_PORT', 9500),
-        'timeout' => (int) env('RPC_REGISTRY_TIMEOUT', 5000),
-        'token' => env('RPC_REGISTRY_TOKEN', null),
-    ],
-    
-    // 服务发现配置
-    'discovery' => [
-        'loadbalancer' => env('RPC_LOADBALANCER', 'random'),
-        'cache_ttl' => (int) env('RPC_CACHE_TTL', 30),
-        'enable_graceful_degradation' => true,
-    ],
-    
-    // 熔断器配置
-    'circuitbreaker' => [
-        'failure_threshold' => 5,
-        'success_threshold' => 3,
-        'timeout' => 60,
-    ],
-    
-    // RPC 调用配置
-    'timeout' => (int) env('RPC_TIMEOUT', 5),
-    'tries' => (int) env('RPC_RETRIES', 2),
-    
-    // 连接池配置
-    'connection' => [
-        'max_connections' => 20,
-        'connect_timeout' => 1,
-        'enable_connection_pool' => true,
-    ],
-    
-    // 中间件配置
-    'middleware' => [
-        // \app\middleware\CustomMiddleware::class,
-    ],
-];
 ```
-
-### 环境变量
-
-所有配置项都支持通过 `.env` 文件覆盖，完整列表参考 [.env.example](.env.example)。
+qs9000/rpc/
+├── client/                 # 客户端相关
+│   ├── BindInterface.php   # 服务绑定
+│   └── Connector.php       # 连接器（含熔断器、连接池）
+├── contract/               # 接口定义
+├── loadbalancer/           # 负载均衡器实现
+├── middleware/             # 中间件
+├── registry/               # 注册中心客户端
+├── server/                 # 服务端信息收集
+├── CircuitBreaker.php      # 熔断器
+├── RpcException.php        # 异常类
+├── ServiceDiscover.php     # 服务发现
+├── ServiceInstance.php     # 服务实例模型
+├── ServiceRegister.php     # 服务注册器
+└── RpcClientService.php    # 服务提供者
+```
 
 ---
 
-## 🎯 高级特性
+## 🧪 测试建议
 
-### 自定义负载均衡策略
+- **注册中心模拟**：可使用 `php -S` 搭建简单 HTTP 服务模拟注册中心 API。
+- **熔断器测试**：编写单元测试模拟连续失败，验证状态转换。
+- **负载均衡分布**：多实例下打印选择的节点 IP，验证加权轮询效果。
 
-```php
-use qs9000\rpc\loadbalancer\LoadBalancerInterface;
-use qs9000\rpc\contract\ServiceInstanceInterface;
-
-class CustomLoadBalancer implements LoadBalancerInterface
-{
-    public function select(array $instances): ?ServiceInstanceInterface
-    {
-        if (empty($instances)) {
-            return null;
-        }
-        
-        // 自定义选择逻辑
-        return $instances[array_rand($instances)];
-    }
-}
-
-// 注册并使用
-$factory = new \qs9000\rpc\loadbalancer\LoadBalancerFactory();
-$factory->register('custom', CustomLoadBalancer::class);
-$discovery->setLoadBalancerStrategy('custom');
-```
-
-### 连接池管理
-
-```php
-// 获取连接池统计
-$stats = $client->getPoolStats();
-echo "总连接数: " . $stats['total_connections'];
-echo "活跃连接: " . $stats['active_connections'];
-
-// 关闭所有连接
-$client->close();
-```
-
-### 批量服务发现
-
-```bash
-# .env
-RPC_ENABLE_BATCH_DISCOVERY=true
-RPC_BATCH_DISCOVERY_SIZE=10
-```
-
-自动批量获取多个服务的实例信息，减少网络往返。
-
----
-
-## 🏆 最佳实践
-
-### 生产环境配置
-
-```bash
-# .env.production
-RPC_REGISTRY_HOST=registry.internal.example.com
-RPC_LOADBALANCER=roundrobin
-RPC_TIMEOUT=5
-RPC_RETRIES=2
-RPC_CACHE_TTL=60
-RPC_MAX_CONNECTIONS=50
-RPC_DEBUG=false
-RPC_LOG_LEVEL=error
-```
-
-### 开发环境配置
-
-```bash
-# .env.development
-RPC_REGISTRY_HOST=127.0.0.1
-RPC_LOADBALANCER=random
-RPC_TIMEOUT=10
-RPC_RETRIES=3
-RPC_CACHE_TTL=10
-RPC_DEBUG=true
-RPC_LOG_LEVEL=debug
-```
-
-### 错误处理最佳实践
-
-```php
-try {
-    $result = $client->call('UserService', 'getUser', ['id' => $id]);
-    return $this->success($result);
-    
-} catch (RpcResponseException $e) {
-    // 业务错误，记录日志
-    Log::warning("RPC 业务错误: " . $e->getMessage());
-    return $this->error('请求处理失败');
-    
-} catch (RpcClientException $e) {
-    // 网络错误，客户端会自动重试
-    Log::error("RPC 网络错误: " . $e->getMessage());
-    return $this->error('服务暂时不可用');
-    
-} catch (RpcException $e) {
-    // 熔断器开启
-    if ($e->getCode() === -32000) {
-        Log::warning("服务熔断");
-        return $this->error('服务繁忙，请稍后重试');
-    }
-    
-    return $this->error('系统错误');
-}
-```
-
-### 性能优化建议
-
-- ✅ 启用连接池：减少连接建立开销
-- ✅ 合理设置超时：避免过长等待
-- ✅ 适当的重试次数：平衡可靠性和延迟
-- ✅ 选择合适的负载均衡策略
-- ✅ 启用调试日志（仅开发环境）
-
----
-
-## ❓ 常见问题
-
-### Q1: 如何排查连接超时问题？
-
-**A:** 
-1. 确认注册中心地址和端口正确
-2. 检查防火墙是否阻止连接
-3. 增加超时时间：`RPC_CONNECT_TIMEOUT=3000`
-4. 启用调试日志：`RPC_DEBUG=true`
-
-### Q2: 熔断器频繁触发怎么办？
-
-**A:** 
-1. 检查后端服务健康状况
-2. 增加失败阈值：`RPC_CIRCUIT_FAILURE_THRESHOLD=10`
-3. 增加超时时间或重试次数
-4. 查看熔断日志
-
-### Q3: 如何实现服务版本管理？
-
-**A:** 调用时传入版本号：
-```php
-$result = $client->call('UserService', 'getUser', ['id' => 1], 'v2');
-```
-
-### Q4: 中间件如何传递参数？
-
-**A:** 使用数组格式 `[类名, [参数]]`：
-```php
-$client->middleware([InjectParamsMiddleware::class, [
-    'app_id' => 'my_app',
-]]);
-```
-
-### Q5: 如何自定义中间件？
-
-**A:** 实现 `MiddlewareInterface` 接口：
-```php
-class MyMiddleware implements MiddlewareInterface
-{
-    public function handle(Protocol $protocol, callable $next): mixed
-    {
-        // 操作 $protocol 对象
-        return $next($protocol);
-    }
-}
-```
 ---
 
 ## 🤝 贡献指南
 
-欢迎贡献代码、报告问题或提出建议！
-
-### 开发规范
-
-- 遵循 PSR-12 编码规范
-- 添加必要的注释和文档
-- 确保代码可测试
-
-### 报告问题
-
-请在 [Issues](https://github.com/qs9000/think-swoole-rpc/issues) 中报告问题，并提供：
-- 问题描述
-- 复现步骤
-- 预期行为
-- 实际行为
-- 环境信息
+欢迎提交 Issue 和 Pull Request。请确保代码符合 PSR-12 标准，并附带必要的单元测试。
 
 ---
 
 ## 📄 许可证
 
-本项目采用 MIT 许可证 - 详见 [LICENSE](LICENSE) 文件
+本项目采用 MIT 许可证。
 
 ---
 
-## 👥 致谢
+## 📧 联系方式
 
-感谢以下开源项目的支持：
-- [ThinkPHP](https://www.thinkphp.cn) - 优秀的 PHP 框架
-- [Swoole](https://www.swoole.com) - 高性能协程引擎
-- 所有贡献者和用户
-
----
-
-## 📞 联系方式
-
-- **项目主页**: [GitHub](https://github.com/qs9000/think-swoole-rpc)
-- **问题反馈**: [Issues](https://github.com/qs9000/think-swoole-rpc/issues)
+如有问题，请联系项目维护者或在 GitHub 提交 Issue。

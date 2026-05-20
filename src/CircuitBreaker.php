@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace qs9000\rpc;
 
+use think\facade\Log;
+
 /**
  * 熔断器（Circuit Breaker）
  * 
@@ -29,8 +31,11 @@ class CircuitBreaker
     const STATE_OPEN = 'open';           // 开启，拒绝调用
     const STATE_HALF_OPEN = 'half_open'; // 半开，允许试探请求
 
-    /** @var array 服务熔断状态数据 [serviceName => stateData] */
-    protected array $services = [];
+    /** @var string 缓存键前缀 */
+    protected const CACHE_PREFIX = 'circuit_breaker:';
+
+    /** @var string 服务列表缓存键 */
+    protected const SERVICES_LIST_KEY = 'circuit_breaker:_services_list';
 
     /** @var int 触发熔断的连续失败次数阈值 */
     protected int $failureThreshold = 5;
@@ -44,17 +49,31 @@ class CircuitBreaker
     /** @var int 请求超时时间（毫秒）- 保留用于兼容性 */
     protected int $requestTimeout = 5000;
 
+    /** @var mixed 缓存实例 */
+    protected $cache;
+
     public function __construct(array $config = [])
     {
         // 从配置加载参数
         if (empty($config) && function_exists('config')) {
-            $config = config('rpc.circuitbreaker', []);
+            $config = config('rpc.client.circuitbreaker', []);
         }
 
         $this->failureThreshold = max(1, $config['failure_threshold'] ?? 5);
         $this->successThreshold = max(1, $config['success_threshold'] ?? 3);
         $this->timeout = max(1, $config['timeout'] ?? 60);
         $this->requestTimeout = max(100, $config['request_timeout'] ?? 5000);
+
+        try {
+            if (function_exists('app')) {
+                $this->cache = app()->cache->store('file');
+            } else {
+                throw new \RuntimeException('Cache store not available');
+            }
+        } catch (\Throwable $e) {
+            Log::error('熔断器缓存初始化失败：'.$e->getMessage(),$e->getTrace());
+            $this->cache = null;
+        }
     }
 
     /**
@@ -66,7 +85,7 @@ class CircuitBreaker
     public function isOpen(string $serviceName): bool
     {
         $state = $this->getState($serviceName);
-        
+
         if ($state === self::STATE_OPEN) {
             // 检查是否超时，可以进入半开状态
             if ($this->shouldAttemptReset($serviceName)) {
@@ -98,11 +117,11 @@ class CircuitBreaker
     public function recordSuccess(string $serviceName): void
     {
         $state = $this->getState($serviceName);
-        
+
         if ($state === self::STATE_HALF_OPEN) {
             // 半开状态下的成功
             $successes = $this->incrementSuccess($serviceName);
-            
+
             if ($successes >= $this->successThreshold) {
                 // 达到成功阈值，恢复到关闭状态
                 $this->setState($serviceName, self::STATE_CLOSED);
@@ -124,7 +143,7 @@ class CircuitBreaker
     public function recordFailure(string $serviceName): void
     {
         $state = $this->getState($serviceName);
-        
+
         if ($state === self::STATE_HALF_OPEN) {
             // 半开状态下的失败，立即回到开启状态
             $this->setState($serviceName, self::STATE_OPEN);
@@ -132,7 +151,7 @@ class CircuitBreaker
         } elseif ($state === self::STATE_CLOSED) {
             // 关闭状态下的失败
             $failures = $this->incrementFailure($serviceName);
-            
+
             if ($failures >= $this->failureThreshold) {
                 // 达到失败阈值，开启熔断
                 $this->setState($serviceName, self::STATE_OPEN);
@@ -151,7 +170,8 @@ class CircuitBreaker
     public function getState(string $serviceName): string
     {
         $this->initService($serviceName);
-        return $this->services[$serviceName]['state'];
+        $data = $this->cacheGet($serviceName);
+        return $data['state'] ?? self::STATE_CLOSED;
     }
 
     /**
@@ -163,14 +183,14 @@ class CircuitBreaker
     public function getStats(string $serviceName): array
     {
         $this->initService($serviceName);
-        $service = $this->services[$serviceName];
+        $service = $this->cacheGet($serviceName);
 
         return [
-            'state' => $service['state'],
-            'failures' => $service['failures'],
-            'successes' => $service['successes'],
-            'last_failure_time' => $service['last_failure_time'],
-            'opened_time' => $service['opened_time'],
+            'state' => $service['state'] ?? self::STATE_CLOSED,
+            'failures' => $service['failures'] ?? 0,
+            'successes' => $service['successes'] ?? 0,
+            'last_failure_time' => $service['last_failure_time'] ?? 0,
+            'opened_time' => $service['opened_time'] ?? 0,
             'failure_threshold' => $this->failureThreshold,
             'success_threshold' => $this->successThreshold,
             'timeout' => $this->timeout,
@@ -185,8 +205,9 @@ class CircuitBreaker
     public function getAllStats(): array
     {
         $stats = [];
-        
-        foreach ($this->services as $name => $service) {
+        $services = $this->getRegisteredServices();
+
+        foreach ($services as $name) {
             $stats[$name] = $this->getStats($name);
         }
 
@@ -209,7 +230,8 @@ class CircuitBreaker
      */
     public function resetAll(): void
     {
-        foreach (array_keys($this->services) as $name) {
+        $services = $this->getRegisteredServices();
+        foreach ($services as $name) {
             $this->reset($name);
         }
     }
@@ -257,14 +279,22 @@ class CircuitBreaker
      */
     protected function initService(string $serviceName): void
     {
-        if (!isset($this->services[$serviceName])) {
-            $this->services[$serviceName] = [
+        $cacheKey = $this->getCacheKey($serviceName);
+
+        // 检查服务是否已存在，如果不存在则初始化
+        if (!$this->cacheHas($serviceName)) {
+            $service = [
                 'state' => self::STATE_CLOSED,
                 'failures' => 0,
                 'successes' => 0,
                 'last_failure_time' => 0,
                 'opened_time' => 0,
             ];
+            // 初始 TTL 设为较大值，避免在熔断期间缓存过期导致状态丢失
+            $this->cacheSet($serviceName, $service, $this->getCacheTtl());
+
+            // 注册服务到列表
+            $this->registerService($serviceName);
         }
     }
 
@@ -277,21 +307,13 @@ class CircuitBreaker
     protected function setState(string $serviceName, string $state): void
     {
         $this->initService($serviceName);
-        
+
+        $service = $this->cacheGet($serviceName);
         // 状态变更日志（可用于监控）
-        if ($this->services[$serviceName]['state'] !== $state) {
-            $oldState = $this->services[$serviceName]['state'];
-            RpcLogger::info(
-                'CircuitBreaker state changed',
-                [
-                    'service' => $serviceName,
-                    'from' => $oldState,
-                    'to' => $state,
-                ]
-            );
+        if (($service['state'] ?? '') !== $state) {
+            $service['state'] = $state;
+            $this->cacheSet($serviceName, $service, $this->getCacheTtl());
         }
-        
-        $this->services[$serviceName]['state'] = $state;
     }
 
     /**
@@ -303,10 +325,14 @@ class CircuitBreaker
     protected function incrementFailure(string $serviceName): int
     {
         $this->initService($serviceName);
-        $this->services[$serviceName]['failures']++;
-        $this->services[$serviceName]['last_failure_time'] = time();
-        
-        return $this->services[$serviceName]['failures'];
+
+        $service = $this->cacheGet($serviceName);
+        $service['failures'] = ($service['failures'] ?? 0) + 1;
+        $service['last_failure_time'] = time();
+
+        $this->cacheSet($serviceName, $service, $this->getCacheTtl());
+
+        return $service['failures'];
     }
 
     /**
@@ -316,8 +342,12 @@ class CircuitBreaker
      */
     protected function resetFailureCount(string $serviceName): void
     {
-        if (isset($this->services[$serviceName])) {
-            $this->services[$serviceName]['failures'] = 0;
+        $this->initService($serviceName);
+
+        $service = $this->cacheGet($serviceName);
+        if (isset($service['failures'])) {
+            $service['failures'] = 0;
+            $this->cacheSet($serviceName, $service, $this->getCacheTtl());
         }
     }
 
@@ -342,9 +372,14 @@ class CircuitBreaker
     protected function incrementSuccess(string $serviceName): int
     {
         $this->initService($serviceName);
-        $this->services[$serviceName]['successes']++;
-        
-        return $this->services[$serviceName]['successes'];
+
+        $service = $this->cacheGet($serviceName);
+        $success = $service['successes'] ?? 0;
+        $service['successes'] = $success + 1;
+
+        $this->cacheSet($serviceName, $service, $this->getCacheTtl());
+
+        return $service['successes'];
     }
 
     /**
@@ -354,9 +389,13 @@ class CircuitBreaker
      */
     protected function resetCounters(string $serviceName): void
     {
-        if (isset($this->services[$serviceName])) {
-            $this->services[$serviceName]['failures'] = 0;
-            $this->services[$serviceName]['successes'] = 0;
+        $this->initService($serviceName);
+
+        $service = $this->cacheGet($serviceName);
+        if (!empty($service)) {
+            $service['failures'] = 0;
+            $service['successes'] = 0;
+            $this->cacheSet($serviceName, $service, $this->getCacheTtl());
         }
     }
 
@@ -368,7 +407,11 @@ class CircuitBreaker
     protected function recordOpenTime(string $serviceName): void
     {
         $this->initService($serviceName);
-        $this->services[$serviceName]['opened_time'] = time();
+
+        $service = $this->cacheGet($serviceName);
+        $service['opened_time'] = time();
+
+        $this->cacheSet($serviceName, $service, $this->getCacheTtl());
     }
 
     /**
@@ -379,12 +422,11 @@ class CircuitBreaker
      */
     protected function shouldAttemptReset(string $serviceName): bool
     {
-        if (!isset($this->services[$serviceName]['opened_time']) || 
-            $this->services[$serviceName]['opened_time'] === 0) {
+        $service = $this->cacheGet($serviceName);
+        if (!isset($service['opened_time']) || $service['opened_time'] === 0) {
             return true;
         }
-
-        $elapsed = time() - $this->services[$serviceName]['opened_time'];
+        $elapsed = time() - $service['opened_time'];
         return $elapsed >= $this->timeout;
     }
 
@@ -411,9 +453,11 @@ class CircuitBreaker
     public function getHealthyServices(): array
     {
         $healthy = [];
-        
-        foreach ($this->services as $name => $service) {
-            if ($service['state'] === self::STATE_CLOSED) {
+        $services = $this->getRegisteredServices();
+
+        foreach ($services as $name) {
+            $state = $this->getState($name);
+            if ($state === self::STATE_CLOSED) {
                 $healthy[] = $name;
             }
         }
@@ -429,13 +473,144 @@ class CircuitBreaker
     public function getTrippedServices(): array
     {
         $tripped = [];
-        
-        foreach ($this->services as $name => $service) {
-            if ($service['state'] === self::STATE_OPEN) {
+        $services = $this->getRegisteredServices();
+
+        foreach ($services as $name) {
+            $state = $this->getState($name);
+            if ($state === self::STATE_OPEN) {
                 $tripped[] = $name;
             }
         }
 
         return $tripped;
+    }
+
+    /**
+     * 生成统一的缓存键
+     *
+     * @param string $serviceName
+     * @return string
+     */
+    protected function getCacheKey(string $serviceName): string
+    {
+        return self::CACHE_PREFIX . $serviceName;
+    }
+
+    /**
+     * 计算缓存 TTL
+     *
+     * @return int
+     */
+    protected function getCacheTtl(): int
+    {
+        // TTL 应至少大于熔断超时时间的两倍，防止在熔断期间缓存过期
+        return max($this->timeout * 2, 300);
+    }
+
+    /**
+     * 封装缓存获取，增加容错
+     *
+     * @param string $serviceName
+     * @return array
+     */
+    protected function cacheGet(string $serviceName): array
+    {
+        if (!$this->cache) {
+            return [];
+        }
+        try {
+            $key = $this->getCacheKey($serviceName);
+            $data = $this->cache->get($key);
+            return is_array($data) ? $data : [];
+        } catch (\Throwable $e) {
+            Log::error('熔断器缓存获取失败：' . $e->getMessage(), $e->getTrace());
+            return [];
+        }
+    }
+
+    /**
+     * 封装缓存设置，增加容错
+     *
+     * @param string $serviceName
+     * @param array $data
+     * @param int $ttl
+     * @return void
+     */
+    protected function cacheSet(string $serviceName, array $data, int $ttl): void
+    {
+        if (!$this->cache) {
+            return;
+        }
+        try {
+            $key = $this->getCacheKey($serviceName);
+            $this->cache->set($key, $data, $ttl);
+        } catch (\Throwable $e) {
+            Log::error('熔断器缓存设置失败：'.$e->getMessage(),$e->getTrace());
+        }
+    }
+
+    /**
+     * 检查缓存是否存在
+     *
+     * @param string $serviceName
+     * @return bool
+     */
+    protected function cacheHas(string $serviceName): bool
+    {
+        if (!$this->cache) {
+            return false;
+        }
+        try {
+            $key = $this->getCacheKey($serviceName);
+            return $this->cache->has($key);
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * 注册服务到全局列表
+     *
+     * @param string $serviceName
+     * @return void
+     */
+    protected function registerService(string $serviceName): void
+    {
+        if (!$this->cache) {
+            return;
+        }
+        try {
+            $list = $this->cache->get(self::SERVICES_LIST_KEY, []);
+            if (!is_array($list)) {
+                $list = [];
+            }
+
+            if (!in_array($serviceName, $list, true)) {
+                $list[] = $serviceName;
+                // 服务列表长期有效，除非手动清理
+                $this->cache->set(self::SERVICES_LIST_KEY, $list, 86400 * 30);
+            }
+        } catch (\Throwable $e) {
+            Log::error('熔断器注册服务失败：' . $e->getMessage(), $e->getTrace());
+        }
+    }
+
+    /**
+     * 获取已注册的服务列表
+     *
+     * @return array
+     */
+    protected function getRegisteredServices(): array
+    {
+        if (!$this->cache) {
+            return [];
+        }
+        try {
+            $list = $this->cache->get(self::SERVICES_LIST_KEY, []);
+            return is_array($list) ? $list : [];
+        } catch (\Throwable $e) {
+            Log::error('熔断器获取注册服务失败：' . $e->getMessage(), $e->getTrace());
+            return [];
+        }
     }
 }

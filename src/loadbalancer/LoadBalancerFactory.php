@@ -16,7 +16,7 @@ class LoadBalancerFactory
     public function __construct()
     {
         if (function_exists('config')) {
-            $strategies = config('rpc.strategies', []);
+            $strategies = config('rpc.discovery.strategies', []);
             foreach ($strategies as $name => $class) {
                 $this->strategies[$name] = $class;
             }

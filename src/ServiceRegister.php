@@ -4,227 +4,375 @@ declare(strict_types=1);
 
 namespace qs9000\rpc;
 
+use think\Event;
+use qs9000\rpc\RegistryClient;
+use qs9000\rpc\RpcException;
+use qs9000\rpc\server\ServerInfo;
+use think\swoole\App;
+use think\Log;
+use Swoole\Timer;
+
 /**
- * RPC 服务注册器
+ * 服务注册器
  *
- * 在服务启动时自动注册到注册中心
+ * 负责在 Swoole 服务器启动时将服务信息注册到注册中心。
+ * 通过监听 Swoole 的初始化事件，自动读取配置并执行注册逻辑。
+ *
+ * @package qs9000\registry
  */
 class ServiceRegister
 {
-    /** @var string 注册中心地址 */
-    protected string $registryHost;
+    protected App $app;
+    protected array $serversData = [];
+    protected array $servicesData = [];
+    protected Log $log;
+    protected ?RegistryClient $rpcRegistryClient = null;
+    protected ?RegistryClient $serverRegistryClient = null;
+    protected array $registryConfig = [];
+    protected bool $enable = false;
 
-    /** @var int 注册中心端口 */
-    protected int $registryPort;
-
-    /** @var int 注册中心超时(毫秒) */
-    protected int $timeout;
-
-    /** @var int 心跳间隔(秒) */
-    protected int $heartbeatInterval = 30;
-
-    /** @var array|null 已注册的服务信息 */
-    protected ?array $registeredService = null;
-
-    /** @var bool 是否已注册 */
-    protected bool $registered = false;
-
-    public function __construct(
-        string $registryHost = '127.0.0.1',
-        int $registryPort = 9500,
-        int $timeout = 5000
-    ) {
-        $this->registryHost = $registryHost;
-        $this->registryPort = $registryPort;
-        $this->timeout = $timeout;
-    }
+    // 用于存储 Timer ID，以便在停止时清理
+    protected int $rpcHeartbeatTimerId = 0;
+    protected int $serverHeartbeatTimerId = 0;
 
     /**
-     * 从配置创建注册器
-     */
-    public static function fromConfig(array $config): self
-    {
-        $registry = $config['registry'] ?? [];
-
-        $instance = new self(
-            $registry['host'] ?? '127.0.0.1',
-            (int) ($registry['port'] ?? 9500),
-            (int) ($registry['timeout'] ?? 5000)
-        );
-
-        if (isset($registry['heartbeat_interval'])) {
-            $instance->setHeartbeatInterval((int) $registry['heartbeat_interval']);
-        }
-
-        return $instance;
-    }
-
-    /**
-     * 注册服务
+     * 构造函数
      *
-     * @param array $serviceConfig 服务配置 (从 swoole.php 的 rpc.server 读取)
-     * @return bool
-     */
-    public function register(array $serviceConfig): bool
-    {
-        $serviceData = $this->buildServiceData($serviceConfig);
-
-        $response = $this->httpPost('/registry/register', $serviceData);
-
-        if ($response && ($response['code'] ?? 0) >= 200 && ($response['code'] ?? 0) < 300) {
-            $this->registered = true;
-            $this->registeredService = $response['data'] ?? $serviceData;
-            return true;
-        }
-
-        return false;
-    }
-
-    /**
-     * 注销服务
+     * 初始化服务注册器，读取配置并准备服务数据。
+     * 如果配置未启用或客户端创建失败，则标记为禁用状态。
      *
-     * @param array $serviceConfig 服务配置
-     * @return bool
+     * @param App $app ThinkPHP Swoole 应用实例
      */
-    public function deregister(array $serviceConfig): bool
+    public function __construct(App $app)
     {
-        if (!$this->registered && $this->registeredService === null) {
-            return true;
-        }
+        $this->app = $app;
+        $this->log = $app->log;
 
-        $serviceData = $this->buildServiceData($serviceConfig);
+        // 安全地获取配置，防止键不存在导致错误
+        $this->registryConfig = $this->app->config->get('rpc.registry', []);
 
-        $response = $this->httpPost('/registry/deregister', $serviceData);
+        // 获取基础配置
+        $config = $this->app->config->get('swoole', []);
+        $localServerName = $this->app->config->get('app.name', 'unknown');
 
-        $this->registered = false;
-        $this->registeredService = null;
-
-        return $response && ($response['code'] ?? 0) >= 200 && ($response['code'] ?? 0) < 300;
-    }
-
-    /**
-     * 发送心跳
-     *
-     * @return bool
-     */
-    public function heartbeat(): bool
-    {
-        if ($this->registeredService === null) {
-            return false;
-        }
-
-        $data = [
-            'id' => $this->registeredService['id'] ?? null,
-            'name' => $this->registeredService['name'] ?? $this->registeredService['service_name'] ?? null,
-            'host' => $this->registeredService['host'] ?? null,
-            'port' => $this->registeredService['port'] ?? null,
-        ];
-
-        if (empty($data['id']) && empty($data['name'])) {
-            return false;
-        }
-
-        $response = $this->httpPost('/registry/heartbeat', $data);
-
-        return $response && ($response['code'] ?? 0) >= 200 && ($response['code'] ?? 0) < 300;
-    }
-
-    /**
-     * 启动心跳定时器 (在 Swoole 环境下)
-     *
-     * @return void
-     */
-    public function startHeartbeat(): void
-    {
-        if (!class_exists('\Swoole\Timer')) {
+        // 安全获取 ServerInfo 和 IP
+        try {
+            $serverInfoInstance = $app->make(ServerInfo::class);
+            $serverIp = $serverInfoInstance->getServerIp($this->registryConfig['exclude_private'] ?? false);
+        } catch (\Throwable $e) {
+            $this->log->error("[Registry] 获取服务器IP失败: " . $e->getMessage());
+            // 如果无法获取IP，注册器无法正常工作，直接禁用
+            $this->enable = false;
             return;
         }
 
-        \Swoole\Timer::tick($this->heartbeatInterval * 1000, function () {
-            $this->heartbeat();
+        // 处理 Server 注册配置
+        // 使用 ?? 防止数组键不存在
+        $serverConfig = $this->registryConfig['server'] ?? [];
+        if (!empty($serverConfig['enable'])) {
+            foreach ($config as $serverName => $serverInfo) {
+                // 确保 $serverInfo 是数组
+                if (!is_array($serverInfo)) {
+                    continue;
+                }
+                if (in_array($serverName, ['http', 'websocket', 'rpc'], true)) {
+                    $serverInfo['host'] = $serverIp;
+                    $this->serversData[] = array_merge(['name' => $localServerName, 'type' => $serverName], $serverInfo);
+                }
+            }
+
+            if (!empty($this->serversData)) {
+                try {
+                    $this->serverRegistryClient = $app->make(RegistryClient::class, ['server']);
+                    $this->enable = true;
+                } catch (\Throwable $e) {
+                    $this->log->error("[Registry] 创建 Server 注册客户端失败: " . $e->getMessage());
+                }
+            }
+        }
+
+        // 处理 RPC 服务注册配置
+        $rpcConfig = $this->registryConfig['rpc'] ?? [];
+        if (!empty($rpcConfig['enable']) && isset($config['rpc'])) {
+            $rpc = $config['rpc'];
+            $host = $serverIp;
+            $port = $rpc['port'] ?? 0;
+
+            // 修正拼写错误: metadate -> metadata
+            $weight = $rpc['weight'] ?? 100;
+            $metadata = $rpc['metadata'] ?? [];
+
+            if ($port > 0 && !empty($rpc['services'])) {
+                foreach ($rpc['services'] as $serviceName => $interface) {
+                    $this->servicesData[] = [
+                        'name' => $serviceName,
+                        'host' => $host,
+                        'port' => $port,
+                        'weight' => $weight,
+                        'metadata' => $metadata
+                    ];
+                }
+
+                if (!empty($this->servicesData)) {
+                    try {
+                        $this->rpcRegistryClient = $this->app->make(RegistryClient::class, ['rpc']);
+                        $this->enable = true;
+                    } catch (\Throwable $e) {
+                        $this->log->error("[Registry] 创建 RPC 注册客户端失败: " . $e->getMessage());
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 订阅 Swoole 初始化事件，并根据配置注册 RPC 服务。
+     *
+     * @param Event $event 事件对象，用于监听 Swoole 生命周期事件。
+     * @return void
+     */
+    public function subscribe(Event $event): void
+    {
+        // 如果服务未启用，不注册任何监听器，节省资源
+        if (!$this->enable) {
+            return;
+        }
+
+        $event->listen('swoole.init', function () {
+            try {
+                $this->registerService();
+                $this->registerServer();
+                $this->startRpcHeartbeat();
+                $this->startServerHeartbeat();
+            } catch (\Throwable $e) {
+                // 记录致命错误，并重新抛出以便上层捕获或终止启动
+                $this->log->error("[Registry] 初始化过程中发生致命错误: " . $e->getMessage(), $e->getTrace());
+                throw new RpcException($e->getMessage(), $e->getCode(), $e);
+            }
+        });
+
+        $event->listen('swoole.beforeWorkerStop', function () {
+            try {
+                // 先停止心跳定时器，防止在注销过程中发送心跳
+                $this->stopHeartbeats();
+
+                $this->unregisterRpcService();
+                $this->unregisterServerService();
+            } catch (\Throwable $e) {
+                // 注销失败不应阻止 Worker 停止，但应记录日志
+                $this->log->error("[Registry] 服务注销过程中发生错误: " . $e->getMessage(), $e->getTrace());
+            }
         });
     }
 
     /**
-     * 设置心跳间隔
+     * 停止所有心跳定时器
+     *
+     * @return void
      */
-    public function setHeartbeatInterval(int $seconds): self
+    private function stopHeartbeats(): void
     {
-        $this->heartbeatInterval = $seconds;
-        return $this;
+        if (class_exists(Timer::class)) {
+            if ($this->rpcHeartbeatTimerId > 0) {
+                Timer::clear($this->rpcHeartbeatTimerId);
+                $this->rpcHeartbeatTimerId = 0;
+            }
+            if ($this->serverHeartbeatTimerId > 0) {
+                Timer::clear($this->serverHeartbeatTimerId);
+                $this->serverHeartbeatTimerId = 0;
+            }
+        }
     }
 
     /**
-     * 是否已注册
+     * 执行服务注册逻辑
+     *
+     * 将预处理好的服务数据发送至注册中心。
+     * 如果服务数据为空、功能未启用或客户端不存在，则跳过执行。
+     *
+     * @return void
+     * @throws RpcException 当注册过程发生异常时抛出
      */
-    public function isRegistered(): bool
+    private function registerService(): void
     {
-        return $this->registered;
-    }
-
-    /**
-     * 获取已注册的服务信息
-     */
-    public function getRegisteredService(): ?array
-    {
-        return $this->registeredService;
-    }
-
-    /**
-     * 构建服务数据
-     */
-    protected function buildServiceData(array $config): array
-    {
-        return [
-            'name' => $config['service_name'] ?? $config['name'] ?? 'rpc-service',
-            'host' => $config['host'] ?? '127.0.0.1',
-            'port' => (int) ($config['port'] ?? 9000),
-            'weight' => (int) ($config['weight'] ?? 100),
-            'metadata' => $config['metadata'] ?? [],
-        ];
-    }
-
-    /**
-     * HTTP POST 请求
-     */
-    protected function httpPost(string $path, array $data): ?array
-    {
-        $url = sprintf('http://%s:%d%s', $this->registryHost, $this->registryPort, $path);
-
-        $body = json_encode($data, JSON_UNESCAPED_UNICODE);
-
-        $ch = curl_init();
-        curl_setopt_array($ch, [
-            CURLOPT_URL => $url,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT_MS => $this->timeout,
-            CURLOPT_CONNECTTIMEOUT_MS => 1000,
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $body,
-            CURLOPT_HTTPHEADER => [
-                'Content-Type: application/json',
-                'Content-Length: ' . strlen($body),
-            ],
-        ]);
-
-        $response = curl_exec($ch);
-        $error = curl_error($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-
-        if ($response === false || !empty($error)) {
-            return null;
+        if (empty($this->servicesData) || !$this->rpcRegistryClient) {
+            return;
         }
 
-        $result = json_decode($response, true);
+        try {
+            $this->rpcRegistryClient->register('rpc', $this->servicesData);
+        } catch (\Throwable $e) {
+            throw new RpcException("RPC服务注册失败: " . $e->getMessage(), 0, $e);
+        }
+    }
 
-        if (!is_array($result)) {
-            return null;
+    /**
+     * 执行服务器注册逻辑
+     *
+     * 将预处理好的服务器数据发送至注册中心。
+     * 如果服务器数据为空、功能未启用或客户端不存在，则跳过执行。
+     *
+     * @return void
+     * @throws RpcException 当注册过程发生异常时抛出
+     */
+    private function registerServer(): void
+    {
+        if (empty($this->serversData) || !$this->serverRegistryClient) {
+            return;
         }
 
-        // 添加 HTTP 状态码
-        $result['code'] = $httpCode;
+        try {
+            $this->serverRegistryClient->register('server', $this->serversData);
+        } catch (\Throwable $e) {
+            throw new RpcException("服务器注册失败: " . $e->getMessage(), 0, $e);
+        }
+    }
 
-        return $result;
+    /**
+     * 启动服务心跳机制
+     *
+     * 使用 Swoole Timer 定时向注册中心发送心跳包，以维持服务存活状态。
+     * 心跳间隔从配置中读取，最大限制为 30 秒。
+     *
+     * @return void
+     */
+    private function startRpcHeartbeat(): void
+    {
+        if (!class_exists(Timer::class)) {
+            return;
+        }
+
+        if (empty($this->servicesData) || !$this->enable || !$this->rpcRegistryClient) {
+            return;
+        }
+
+        // 使用构造函数中缓存的配置
+        $config = $this->registryConfig;
+        $rpcConfig = $config['rpc'] ?? [];
+
+        // 确保间隔是正整数，默认30s，最大30s
+        $heartbeatInterval = max(1, min(30, (int)($rpcConfig['heartbeat_interval'] ?? 30)));
+
+        // 修复：在类方法中的匿名函数可以直接访问 $this (PHP 5.4+)
+        // 但为了明确意图和避免潜在的序列化问题，我们依赖 $this 上下文
+        $this->rpcHeartbeatTimerId = Timer::tick($heartbeatInterval * 1000, function () {
+            // 再次检查实例状态，防止在极端情况下对象部分销毁
+            if (empty($this->servicesData) || !$this->rpcRegistryClient) {
+                return;
+            }
+
+            try {
+                foreach ($this->servicesData as $service) {
+                    if (!isset($service['name'], $service['host'], $service['port'])) {
+                        continue;
+                    }
+                    $serviceName = "{$service['name']}:{$service['host']}:{$service['port']}";
+                    $this->rpcRegistryClient->heartbeat('rpc', $serviceName);
+                }
+            } catch (\Throwable $e) {
+                $this->log->error("RPC服务发送心跳失败: " . $e->getMessage(), $e->getTrace());
+            }
+        });
+    }
+
+    /**
+     * 启动服务器心跳机制
+     *
+     * 使用 Swoole Timer 定时向注册中心发送服务器心跳包，以维持服务器存活状态。
+     * 心跳间隔从配置中读取，最大限制为 30 秒。
+     *
+     * @return void
+     */
+    private function startServerHeartbeat(): void
+    {
+        if (!class_exists(Timer::class)) {
+            return;
+        }
+
+        if (empty($this->serversData) || !$this->enable || !$this->serverRegistryClient) {
+            return;
+        }
+
+        // 使用构造函数中缓存的配置
+        $config = $this->registryConfig;
+        $serverConfig = $config['server'] ?? [];
+
+        // 确保间隔是正整数
+        $heartbeatInterval = max(1, min(30, (int)($serverConfig['heartbeat_interval'] ?? 30)));
+
+        $this->serverHeartbeatTimerId = Timer::tick($heartbeatInterval * 1000, function () {
+            // 再次检查实例状态，防止在极端情况下对象部分销毁
+            if (empty($this->serversData) || !$this->serverRegistryClient) {
+                return;
+            }
+
+            try {
+                foreach ($this->serversData as $service) {
+                    if (!isset($service['name'], $service['host'])) {
+                        continue;
+                    }
+                    $serviceName = "{$service['name']}";
+                    $this->serverRegistryClient->heartbeat('server', $serviceName);
+                }
+            } catch (\Throwable $e) {
+                $this->log->error("服务器发送心跳失败: " . $e->getMessage(), $e->getTrace());
+            }
+        });
+    }
+
+    /**
+     * 执行服务注销逻辑
+     *
+     * 在 Worker 停止前，从注册中心移除当前服务实例信息。
+     * 即使注销失败，也仅记录日志而不中断流程。
+     *
+     * @return void
+     */
+    private function unregisterRpcService(): void
+    {
+        if (empty($this->servicesData) || !$this->enable || !$this->rpcRegistryClient) {
+            return;
+        }
+
+        try {
+            foreach ($this->servicesData as $service) {
+                if (!isset($service['name'], $service['host'], $service['port'])) {
+                    continue;
+                }
+                $serviceName = "{$service['name']}:{$service['host']}:{$service['port']}";
+                $this->rpcRegistryClient->unregister('rpc', $serviceName);
+            }
+        } catch (\Throwable $e) {
+            // 记录注销失败
+            $this->log->error("[Registry] RPC服务注销失败: " . $e->getMessage(), $e->getTrace());
+        }
+    }
+
+    /**
+     * 执行服务器注销逻辑
+     *
+     * 在 Worker 停止前，从注册中心移除当前服务器实例信息。
+     * 即使注销失败，也仅记录日志而不中断流程。
+     *
+     * @return void
+     */
+    private function unregisterServerService(): void
+    {
+        if (empty($this->serversData) || !$this->enable || !$this->serverRegistryClient) {
+            return;
+        }
+
+        try {
+            foreach ($this->serversData as $service) {
+                if (!isset($service['name'], $service['host'])) {
+                    continue;
+                }
+                $serviceName = "{$service['name']}";
+                $this->serverRegistryClient->unregister('server', $serviceName);
+            }
+        } catch (\Throwable $e) {
+            // 记录注销失败
+            $this->log->error("[Registry] 服务器注销失败: " . $e->getMessage(), $e->getTrace());
+        }
     }
 }

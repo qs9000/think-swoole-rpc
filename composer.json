@@ -33,11 +33,33 @@
     "extra": {
         "think": {
             "services": [
-                "qs9000\\rpc\\ServiceProvider"
+                "qs9000\\rpc\\RpcClientService::class"
             ],
-            "config":{
-                "rpc":"qs9000\\rpc\\config\\rpc.php"
-            }
+            "config": {
+                "rpc": "qs9000\\rpc\\config\\rpc.php",
+                "swoole": {
+                    "rpc": {
+                        "server": {
+                            "services":[
+                                {"serverInfo":"qs9000\\rpc\\server\\ServerInfo::class"}
+                            ],
+                            "middleware": [
+                                "qs9000\\rpc\\middleware\\RpcServerRateLimit::class",
+                                "qs9000\\rpc\\middleware\\RpcServerAuth::class",
+                                "qs9000\\rpc\\middleware\\RpcServerInjectRequest::class"
+                            ]
+                        }
+                    }
+                }
+            },
+            "event": {
+                "subscribe": [
+                    "qs9000\\rpc\\event\\RpcClientEvent::class"
+                ]
+            },
+            "app": [
+                "qs9000\\rpc\\registry\\rpc.php"
+            ]
         }
     },
     "config": {
