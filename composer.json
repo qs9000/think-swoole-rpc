@@ -36,21 +36,7 @@
                 "qs9000\\rpc\\RpcClientService::class"
             ],
             "config": {
-                "rpc": "qs9000\\rpc\\config\\rpc.php",
-                "swoole": {
-                    "rpc": {
-                        "server": {
-                            "services":[
-                                {"serverInfo":"qs9000\\rpc\\server\\ServerInfo::class"}
-                            ],
-                            "middleware": [
-                                "qs9000\\rpc\\middleware\\RpcServerRateLimit::class",
-                                "qs9000\\rpc\\middleware\\RpcServerAuth::class",
-                                "qs9000\\rpc\\middleware\\RpcServerInjectRequest::class"
-                            ]
-                        }
-                    }
-                }
+                "rpc": "src/config/rpc.php"
             },
             "event": {
                 "subscribe": [
