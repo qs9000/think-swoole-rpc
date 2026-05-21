@@ -7,81 +7,83 @@ namespace qs9000\rpc\registry;
 use InvalidArgumentException;
 use qs9000\rpc\registry\RegistryClientInterface;
 
-class RegistryRpcClient implements RegistryClientInterface
+class RegistryRpcClient
 {
     private RegistryClientInterface $registry;
-    public function __construct()
+    private string $type;
+    public function __construct(string $type = 'rpc')
     {
         $this->registry = app()->make(RegistryClientInterface::class);
+        $this->type = $type;
     }
     /**
      *@inheritDoc
      */
-    public function register(string $type, array $data): bool
+    public function register(array $data): bool
     {
         if (empty($data)) {
             throw new InvalidArgumentException('注册数据不能为空。');
         }
 
-        return $this->registry->register($type, $data);
+        return $this->registry->register($this->type, $data);
     }
 
     /**
      *@inheritDoc
      */
-    public function unregister(string $type, string $serviceName): bool
+    public function unregister(string $serviceName): bool
     {
         $this->validateServiceName($serviceName);
 
-        return $this->registry->unregister($type, $serviceName);
+        return $this->registry->unregister($this->type, $serviceName);
     }
 
     /**
      *@inheritDoc
      */
-    public function heartbeat(string $type, string $serviceName): bool
+    public function heartbeat(string $serviceName): bool
     {
         $this->validateServiceName($serviceName);
 
-        return $this->registry->heartbeat($type, $serviceName);
+        return $this->registry->heartbeat($this->type, $serviceName);
     }
 
     /**
      *@inheritDoc
-     */    public function health(string $type, string $serviceName): bool
+     */    public function health(string $serviceName): bool
     {
         $this->validateServiceName($serviceName);
 
-        return $this->registry->health($type, $serviceName);
-    }
-
-    /**
-     *@inheritDoc
-     */
-    public function discover(string $type, string $serviceName): array
-    {
-        $this->validateServiceName($serviceName);
-
-        return $this->registry->discover($type, $serviceName);
+        return $this->registry->health($this->type, $serviceName);
     }
 
     /**
      *@inheritDoc
      */
-    public function list(string $type, string $serviceName = ''): array
+    public function discover(string $serviceName): array
+    {
+        $this->validateServiceName($serviceName);
+
+        return $this->registry->discover($this->type, $serviceName);
+    }
+
+    /**
+     *@inheritDoc
+     */
+    public function list(string $serviceName = ''): array
     {
         // list 方法允许空字符串以获取所有服务，因此不做非空校验，但可做基本格式校验如果非空
         if ($serviceName !== '') {
             $this->validateServiceName($serviceName);
         }
 
-        return $this->registry->list($type, $serviceName);
+        return $this->registry->list($this->type, $serviceName);
     }
 
     /**
      *@inheritDoc
      */
-    public function listHost(string $type, string $host = '*', string $port = '*'): array
+    public function listHost(string $host = '*', string $port = '*'): array
     {
         // 对于 host 和 port，如果是通配符 '*' 则跳过校验，否则进行基本校验
         if ($host !== '*' && $host !== '') {
@@ -95,7 +97,7 @@ class RegistryRpcClient implements RegistryClientInterface
             }
         }
 
-        return $this->registry->listHost($type, $host, $port);
+        return $this->registry->listHost($this->type, $host, $port);
     }
 
     /**

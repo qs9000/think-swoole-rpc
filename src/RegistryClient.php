@@ -6,7 +6,8 @@ namespace qs9000\rpc;
 
 use qs9000\rpc\registry\RegistryHttpClient;
 use qs9000\rpc\registry\RegistryRpcClient;
-use qs9000\rpc\registry\RegistryClientInterface;
+
+use think\facade\Config;
 
 /**
  * 注册中心客户端
@@ -21,20 +22,19 @@ use qs9000\rpc\registry\RegistryClientInterface;
  *
  * @package qs9000\rpc
  */
-class RegistryClient implements RegistryClientInterface
+class RegistryClient
 {
-    private RegistryClientInterface $client;
+    private RegistryHttpClient|RegistryRpcClient $client;
 
     public function __construct(string $type)
     {
-        $config = App('config')->get('rpc.registry');
-        if (empty($config) || !$config[$type]['enable']) {
+        $config = Config::get('rpc.registry.' . $type);
+        if (empty($config) || !$config['enable']) {
             return;
         }
-        $config = array_merge($config, $config[$type]);
-        $this->client = match ($config[$type]['method'] ?? 'rpc') {
-            'http' => new RegistryHttpClient($config),
-            'rpc' => new RegistryRpcClient(),
+        $this->client = match ($config['method'] ?? 'rpc') {
+            'http' => new RegistryHttpClient($type),
+            'rpc' => new RegistryRpcClient($type),
             default => throw new \InvalidArgumentException('不支持的注册中心访问方法: ' . ($config[$type]['method'] ?? 'null')),
         };
     }
@@ -42,56 +42,56 @@ class RegistryClient implements RegistryClientInterface
     /**
      * @inheritDoc
      */
-    public function register(string $type, array $data): bool
+    public function register(array $data): bool
     {
-        return $this->client->register($type, $data);
+        return $this->client->register($data);
     }
 
     /**
      * @inheritDoc
      */
-    public function unregister(string $type, string $serviceName): bool
+    public function unregister(string $serviceName): bool
     {
-        return $this->client->unregister($type, $serviceName);
+        return $this->client->unregister($serviceName);
     }
 
     /**
      * @inheritDoc
      */
-    public function heartbeat(string $type, string $serviceName): bool
+    public function heartbeat(string $serviceName): bool
     {
-        return $this->client->heartbeat($type, $serviceName);
+        return $this->client->heartbeat($serviceName);
     }
 
     /**
      * @inheritDoc
      */
-    public function health(string $type, string $serviceName): bool
+    public function health(string $serviceName): bool
     {
-        return $this->client->health($type, $serviceName);
+        return $this->client->health($serviceName);
     }
 
     /**
      * @inheritDoc
      */
-    public function discover(string $type, string $serviceName): array
+    public function discover(string $serviceName): array
     {
-        return $this->client->discover($type, $serviceName);
+        return $this->client->discover($serviceName);
     }
 
     /**
      * @inheritDoc
      */
-    public function list(string $type, string $serviceName = ''): array
+    public function list(string $serviceName = ''): array
     {
-        return $this->client->list($type, $serviceName);
+        return $this->client->list($serviceName);
     }
 
     /**
      * @inheritDoc
      */
-    public function listHost(string $type, string $host = '*', string $port = '*'): array
+    public function listHost(string $host = '*', string $port = '*'): array
     {
-        return $this->client->listHost($type, $host, $port);
+        return $this->client->listHost($host, $port);
     }
 }

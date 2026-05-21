@@ -85,6 +85,7 @@ return [
         ], //中间件配置
         // 熔断器配置 (Circuit Breaker)
         'circuitbreaker' => [
+            'cache'=>'file', // 熔断器列表缓存方式，对应config/cache.php中的缓存配置项，默认为 file
             // 失败阈值 - 连续失败多少次后开启熔断
             'failure_threshold' => 5,
             // 成功阈值 - 半开状态下连续成功多少次后恢复

@@ -7,7 +7,6 @@ namespace qs9000\rpc;
 use qs9000\rpc\contract\ServiceInstanceInterface;
 use qs9000\rpc\loadbalancer\LoadBalancerFactory;
 use think\cache\Driver;
-use think\swoole\App;
 
 /**
  * 服务发现类
@@ -17,7 +16,7 @@ use think\swoole\App;
 class ServiceDiscover
 {
     private Driver $cache;
-    private App $app;
+    private mixed $app;
     private array $config;
 
     /**

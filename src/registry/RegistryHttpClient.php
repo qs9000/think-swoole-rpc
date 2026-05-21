@@ -4,25 +4,25 @@ declare(strict_types=1);
 
 namespace qs9000\rpc\registry;
 
-use qs9000\rpc\registry\RegistryClientInterface;
-
 /**
  * 注册中心Http客户端类
  * 提供服务注册、注销、心跳检测等功能
  */
-class RegistryHttpClient implements RegistryClientInterface
+class RegistryHttpClient
 {
     protected array $config;
     protected string $url;
-
+    protected string $type;
     /**
      * 构造函数，初始化配置并验证URL格式
      * @throws \InvalidArgumentException 当配置无效时抛出异常
      */
-    public function __construct(array $config = [])
+    public function __construct(string $type = 'rpc')
     {
-        $this->config = $config;
-
+        $this->type = $type;
+        $this->config = config('rpc.registry') ?? [];
+        $typeConfig = config('rpc.registry.' . $type) ?? [];
+        $this->config = array_merge($this->config, $typeConfig);
         if (empty($this->config)) {
             throw new \InvalidArgumentException('注册中心配置无效');
         }
@@ -51,69 +51,69 @@ class RegistryHttpClient implements RegistryClientInterface
     /**
      *@inheritDoc
      */
-    public function register(string $type,array $data): bool
+    public function register(array $data): bool
     {
-        return $this->executeRequest('post', '/registry/register', ['type'=>$type,'data'=>$data]);
+        return $this->executeRequest('post', '/registry/register', ['type' => $this->type, 'data' => $data]);
     }
 
     /**
      *@inheritDoc
      */
-    public function unregister(string $type,string $serviceName): bool
+    public function unregister(string $serviceName): bool
     {
-        return $this->executeRequest('post', '/registry/unregister', ['type'=>$type,'serverName' => $serviceName]);
+        return $this->executeRequest('post', '/registry/unregister', ['type' => $this->type, 'serverName' => $serviceName]);
     }
 
     /**
      *@inheritDoc
      */
-    public function heartbeat(string $type,string $serviceName): bool
+    public function heartbeat(string $serviceName): bool
     {
         // 对路径参数进行编码，防止注入
         $encodedServiceName = rawurlencode($serviceName);
-        return $this->executeRequest('get', "/registry/heartbeat/{$type}/{$encodedServiceName}");
+        return $this->executeRequest('get', "/registry/heartbeat/{$this->type}/{$encodedServiceName}");
     }
 
     /**
      *@inheritDoc
      */
-    public function health(string $type,string $serviceName): bool
+    public function health(string $serviceName): bool
     {
         // 对路径参数进行编码
         $encodedServiceName = rawurlencode($serviceName);
-        return $this->executeRequest('get', "/registry/health/{$type}.{$encodedServiceName}");
+        return $this->executeRequest('get', "/registry/health/{$this->type}.{$encodedServiceName}");
     }
 
     /**
      *@inheritDoc
      */
-    public function discover(string $type,string $serviceName): array
+    public function discover(string $serviceName): array
     {
         // 对路径参数进行编码
         $encodedServiceName = rawurlencode($serviceName);
-        return $this->executeRequest('get', "/registry/discover/{$type}/{$encodedServiceName}");
+        return $this->executeRequest('get', "/registry/discover/{$this->type}/{$encodedServiceName}");
     }
 
     /**
      *@inheritDoc
      */
-    public function list(string $type,string $serviceName = ''): array
+    public function list(string $serviceName = ''): array
     {
         // 对路径参数进行编码
         $encodedServiceName = rawurlencode($serviceName);
-        return $this->executeRequest('get', "/registry/list/{$type}/{$encodedServiceName}");
+        return $this->executeRequest('get', "/registry/list/{$this->type}/{$encodedServiceName}");
     }
 
 
     /**
      *@inheritDoc
      */
-    public function listHost(string $type,string $host = '*', string $port = '*'): array
+    public function listHost(string $host = '*', string $port = '*'): array
     {
         // 对路径参数进行编码
         $encodedHost = rawurlencode($host);
         $encodedPort = rawurlencode($port);
-        return $this->executeRequest('get', "/registry/hosts/{$type}/{$encodedHost}/{$encodedPort}");
+        return $this->executeRequest('get', "/registry/hosts/{$this->type}/{$encodedHost}/{$encodedPort}");
     }
 
     /**

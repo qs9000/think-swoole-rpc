@@ -8,8 +8,8 @@ use think\Event;
 use qs9000\rpc\RegistryClient;
 use qs9000\rpc\RpcException;
 use qs9000\rpc\server\ServerInfo;
-use think\swoole\App;
-use think\Log;
+use think\facade\Log;
+use think\facade\Config;
 use Swoole\Timer;
 
 /**
@@ -22,10 +22,8 @@ use Swoole\Timer;
  */
 class ServiceRegister
 {
-    protected App $app;
     protected array $serversData = [];
     protected array $servicesData = [];
-    protected Log $log;
     protected ?RegistryClient $rpcRegistryClient = null;
     protected ?RegistryClient $serverRegistryClient = null;
     protected array $registryConfig = [];
@@ -41,26 +39,22 @@ class ServiceRegister
      * 初始化服务注册器，读取配置并准备服务数据。
      * 如果配置未启用或客户端创建失败，则标记为禁用状态。
      *
-     * @param App $app ThinkPHP Swoole 应用实例
      */
-    public function __construct(App $app)
+    public function __construct()
     {
-        $this->app = $app;
-        $this->log = $app->log;
-
         // 安全地获取配置，防止键不存在导致错误
-        $this->registryConfig = $this->app->config->get('rpc.registry', []);
+        $this->registryConfig = Config::get('rpc.registry', []);
 
         // 获取基础配置
-        $config = $this->app->config->get('swoole', []);
-        $localServerName = $this->app->config->get('app.name', 'unknown');
+        $config = Config::get('swoole', []);
+        $localServerName = Config::get('app.name', 'unknown');
 
         // 安全获取 ServerInfo 和 IP
         try {
-            $serverInfoInstance = $app->make(ServerInfo::class);
+            $serverInfoInstance = app()->make(ServerInfo::class);
             $serverIp = $serverInfoInstance->getServerIp($this->registryConfig['exclude_private'] ?? false);
         } catch (\Throwable $e) {
-            $this->log->error("[Registry] 获取服务器IP失败: " . $e->getMessage());
+            Log::error("[Registry] 获取服务器IP失败: " . $e->getMessage());
             // 如果无法获取IP，注册器无法正常工作，直接禁用
             $this->enable = false;
             return;
@@ -83,10 +77,10 @@ class ServiceRegister
 
             if (!empty($this->serversData)) {
                 try {
-                    $this->serverRegistryClient = $app->make(RegistryClient::class, ['server']);
+                    $this->serverRegistryClient = app()->make(RegistryClient::class, ['server']);
                     $this->enable = true;
                 } catch (\Throwable $e) {
-                    $this->log->error("[Registry] 创建 Server 注册客户端失败: " . $e->getMessage());
+                    Log::error("[Registry] 创建 Server 注册客户端失败: " . $e->getMessage());
                 }
             }
         }
@@ -115,10 +109,10 @@ class ServiceRegister
 
                 if (!empty($this->servicesData)) {
                     try {
-                        $this->rpcRegistryClient = $this->app->make(RegistryClient::class, ['rpc']);
+                        $this->rpcRegistryClient = app()->make(RegistryClient::class, ['rpc']);
                         $this->enable = true;
                     } catch (\Throwable $e) {
-                        $this->log->error("[Registry] 创建 RPC 注册客户端失败: " . $e->getMessage());
+                        Log::error("[Registry] 创建 RPC 注册客户端失败: " . $e->getMessage());
                     }
                 }
             }
@@ -146,7 +140,7 @@ class ServiceRegister
                 $this->startServerHeartbeat();
             } catch (\Throwable $e) {
                 // 记录致命错误，并重新抛出以便上层捕获或终止启动
-                $this->log->error("[Registry] 初始化过程中发生致命错误: " . $e->getMessage(), $e->getTrace());
+                Log::error("[Registry] 初始化过程中发生致命错误: " . $e->getMessage(), $e->getTrace());
                 throw new RpcException($e->getMessage(), $e->getCode(), $e);
             }
         });
@@ -160,7 +154,7 @@ class ServiceRegister
                 $this->unregisterServerService();
             } catch (\Throwable $e) {
                 // 注销失败不应阻止 Worker 停止，但应记录日志
-                $this->log->error("[Registry] 服务注销过程中发生错误: " . $e->getMessage(), $e->getTrace());
+                Log::error("[Registry] 服务注销过程中发生错误: " . $e->getMessage(), $e->getTrace());
             }
         });
     }
@@ -200,7 +194,7 @@ class ServiceRegister
         }
 
         try {
-            $this->rpcRegistryClient->register('rpc', $this->servicesData);
+            $this->rpcRegistryClient->register($this->servicesData);
         } catch (\Throwable $e) {
             throw new RpcException("RPC服务注册失败: " . $e->getMessage(), 0, $e);
         }
@@ -222,7 +216,7 @@ class ServiceRegister
         }
 
         try {
-            $this->serverRegistryClient->register('server', $this->serversData);
+            $this->serverRegistryClient->register($this->serversData);
         } catch (\Throwable $e) {
             throw new RpcException("服务器注册失败: " . $e->getMessage(), 0, $e);
         }
@@ -267,10 +261,10 @@ class ServiceRegister
                         continue;
                     }
                     $serviceName = "{$service['name']}:{$service['host']}:{$service['port']}";
-                    $this->rpcRegistryClient->heartbeat('rpc', $serviceName);
+                    $this->rpcRegistryClient->heartbeat($serviceName);
                 }
             } catch (\Throwable $e) {
-                $this->log->error("RPC服务发送心跳失败: " . $e->getMessage(), $e->getTrace());
+                Log::error("RPC服务发送心跳失败: " . $e->getMessage(), $e->getTrace());
             }
         });
     }
@@ -312,10 +306,10 @@ class ServiceRegister
                         continue;
                     }
                     $serviceName = "{$service['name']}";
-                    $this->serverRegistryClient->heartbeat('server', $serviceName);
+                    $this->serverRegistryClient->heartbeat($serviceName);
                 }
             } catch (\Throwable $e) {
-                $this->log->error("服务器发送心跳失败: " . $e->getMessage(), $e->getTrace());
+                Log::error("服务器发送心跳失败: " . $e->getMessage(), $e->getTrace());
             }
         });
     }
@@ -340,11 +334,11 @@ class ServiceRegister
                     continue;
                 }
                 $serviceName = "{$service['name']}:{$service['host']}:{$service['port']}";
-                $this->rpcRegistryClient->unregister('rpc', $serviceName);
+                $this->rpcRegistryClient->unregister($serviceName);
             }
         } catch (\Throwable $e) {
             // 记录注销失败
-            $this->log->error("[Registry] RPC服务注销失败: " . $e->getMessage(), $e->getTrace());
+            Log::error("[Registry] RPC服务注销失败: " . $e->getMessage(), $e->getTrace());
         }
     }
 
@@ -368,11 +362,11 @@ class ServiceRegister
                     continue;
                 }
                 $serviceName = "{$service['name']}";
-                $this->serverRegistryClient->unregister('server', $serviceName);
+                $this->serverRegistryClient->unregister($serviceName);
             }
         } catch (\Throwable $e) {
             // 记录注销失败
-            $this->log->error("[Registry] 服务器注销失败: " . $e->getMessage(), $e->getTrace());
+            Log::error("[Registry] 服务器注销失败: " . $e->getMessage(), $e->getTrace());
         }
     }
 }

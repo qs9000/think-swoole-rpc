@@ -43,11 +43,11 @@ class ServerInfo implements ServerInfoInterface
         if ($diskTotal !== false && $diskFree !== false && $diskTotal > 0) {
             $usagePercent = round(($diskTotal - $diskFree) / $diskTotal * 100, 1);
         }
-        $excludePrivate = app()->config->get('rpc.server.exclude_private', false);
+        $excludePrivate = config('rpc.server.exclude_private', false);
         return [
             'server' => [
                 'ip'       => $this->getServerIp($excludePrivate) ?? 'unknown',
-                'hostname' => app()->config->get('app.name', 'unknown'),
+                'hostname' => config('app.name')??'unknown',
                 'arch'     => php_uname(),
                 'software' => $_SERVER['SERVER_SOFTWARE']  ?? 'unknown',
                 'port'     => $_SERVER['SERVER_PORT']      ?? null,
