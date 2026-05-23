@@ -28,56 +28,56 @@ class ServiceRegister
      * @var array
      */
     protected array $serversData = [];
-    
+
     /**
      * 存储服务数据的数组
      *
      * @var array
      */
     protected array $servicesData = [];
-    
+
     /**
      * RPC注册客户端实例
      *
      * @var RegistryClient|null
      */
     protected ?RegistryClient $rpcRegistryClient = null;
-    
+
     /**
      * 服务器注册客户端实例
      *
      * @var RegistryClient|null
      */
     protected ?RegistryClient $serverRegistryClient = null;
-    
+
     /**
      * 注册配置数组
      *
      * @var array
      */
     protected array $registryConfig = [];
-    
+
     /**
      * RPC功能是否启用标志
      *
      * @var bool
      */
     protected bool $rpcEnable = false;
-    
+
     /**
      * 服务器功能是否启用标志
      *
      * @var bool
      */
     protected bool $serverEnable = false;
-    
+
     /**
      * 用于存储 RPC 心跳定时器 ID，以便在停止时清理
      *
      * @var int
      */
     protected int $rpcHeartbeatTimerId = 0;
-    
+
     /**
      * 用于存储 服务器心跳定时器 ID，以便在停止时清理
      *
@@ -96,7 +96,7 @@ class ServiceRegister
     {
         // 安全地获取配置，防止键不存在导致错误
         $this->registryConfig = Config::get('rpc.registry', []);
-
+        $registryClass = $this->registryConfig['registry_class'];
         // 获取基础配置
         $config = Config::get('swoole', []);
 
@@ -127,7 +127,7 @@ class ServiceRegister
 
             if (!empty($this->serversData)) {
                 try {
-                    $this->serverRegistryClient = app()->make(RegistryClient::class, ['server']);
+                    $this->serverRegistryClient = app()->make($registryClass ?? RegistryClient::class, ['server']);
                     $this->serverEnable = true;
                 } catch (\Throwable $e) {
                     Log::error("[Registry] 创建 Server 注册客户端失败: " . $e->getMessage());
@@ -160,7 +160,7 @@ class ServiceRegister
 
                 if (!empty($this->servicesData)) {
                     try {
-                        $this->rpcRegistryClient = app()->make(RegistryClient::class, ['rpc']);
+                        $this->rpcRegistryClient = app()->make($registryClass ?? RegistryClient::class, ['rpc']);
                         $this->rpcEnable = true;
                     } catch (\Throwable $e) {
                         Log::error("[Registry] 创建 RPC 注册客户端失败: " . $e->getMessage());
