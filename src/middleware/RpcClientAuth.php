@@ -8,6 +8,7 @@ use qs9000\rpc\contract\MiddlewareInterface;
 use qs9000\rpc\RpcException;
 use think\swoole\rpc\Protocol;
 use think\facade\Cache;
+use think\facade\Log;
 
 class RpcClientAuth implements MiddlewareInterface
 {
@@ -33,24 +34,42 @@ class RpcClientAuth implements MiddlewareInterface
 
         // 获取当前时间戳用于签名生成
         $timestamp = time();
-        $cache = config('rpc.server.auth.cache', 'system');
-        // 验证服务器密钥配置有效性
-        $secret = Cache::store($cache)->get("server_{$serverName}");
-        if ($secret === null || $secret === '') {
-            throw new RpcException('服务器密钥未配置，请在系统管理中配置服务器密钥');
+        $cacheStore = config('rpc.server.auth.cache', 'system');
+        
+        try {
+            // 验证服务器密钥配置有效性
+            $secret = Cache::store($cacheStore)->get("server_{$serverName}");
+            if ($secret === null || $secret === '') {
+                throw new RpcException('服务器密钥未配置，请在系统管理中配置服务器密钥');
+            }
+
+            // 构建签名字符串并生成 HMAC-SHA256 签名
+            $signData = "{$serverName}{$timestamp}";
+            $sign = hash_hmac('sha256', $signData, $secret);
+
+            // 验证签名生成是否成功
+            if ($sign === false || $sign === '') {
+                Log::error("RPC客户端认证签名生成失败，服务器: {$serverName}");
+                throw new RpcException('服务器签名生成失败');
+            }
+
+            // 将服务器身份信息注入协议上下文
+            $context = $protocol->getContext();
+            $context['server_name'] = $serverName;
+            $context['timestamp'] = $timestamp;
+            $context['sign'] = $sign;
+            $protocol->setContext($context);
+
+            return $next($protocol);
+        } catch (\Throwable $e) {
+            Log::error("RPC客户端认证中间件执行失败: " . $e->getMessage(), [
+                'server_name' => $serverName,
+                'timestamp' => $timestamp,
+                'error' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
+            throw $e;
         }
-
-        // 构建签名字符串并生成 HMAC-SHA256 签名
-        $signData = "{$serverName}{$timestamp}";
-        $sign = hash_hmac('sha256', $signData, $secret);
-
-        // 将服务器身份信息注入协议上下文
-        $context = $protocol->getContext();
-        $context['server_name'] = $serverName;
-        $context['timestamp'] = $timestamp;
-        $context['sign'] = $sign;
-        $protocol->setContext($context);
-
-        return $next($protocol);
     }
 }

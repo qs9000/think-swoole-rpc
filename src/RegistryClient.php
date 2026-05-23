@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 namespace qs9000\rpc;
 
-use qs9000\rpc\registry\RegistryHttpClient;
-use qs9000\rpc\registry\RegistryRpcClient;
-
+use think\cache\driver\Redis;
+use think\facade\Cache;
 use think\facade\Config;
+use qs9000\rpc\registry\RegistryClientInterface;
 
 /**
  * 注册中心客户端
@@ -22,21 +22,29 @@ use think\facade\Config;
  *
  * @package qs9000\rpc
  */
-class RegistryClient
+class RegistryClient implements RegistryClientInterface
 {
-    private RegistryHttpClient|RegistryRpcClient $client;
+    private Redis $cache;
+    private string $cacheKeyPrefix;
 
-    public function __construct(string $type)
+    private int $heartbeatInterval;
+
+    /**
+     *@inheritDoc
+     */
+    public function __construct(string $type = 'rpc')
     {
-        $config = Config::get('rpc.registry.' . $type);
-        if (empty($config) || !$config['enable']) {
-            return;
-        }
-        $this->client = match ($config['method'] ?? 'rpc') {
-            'http' => new RegistryHttpClient($type),
-            'rpc' => new RegistryRpcClient($type),
-            default => throw new \InvalidArgumentException('不支持的注册中心访问方法: ' . ($config[$type]['method'] ?? 'null')),
+        $this->cacheKeyPrefix = match ($type) {
+            'rpc' => 'registry:rpc:',
+            'server' => 'registry:server:',
+            default => throw new \Exception('非法的注册类型'),
         };
+        $cache = Config::get('rpc.registry.cache');
+        $this->cache = Cache::store($cache);
+        if (!$this->cache instanceof Redis) {
+            throw new \Exception('注册中心必须是Redis缓存');
+        }
+        $this->heartbeatInterval = Config::get("rpc.registry.{$type}.heartbeat_interval", 30);
     }
 
     /**
@@ -44,54 +52,106 @@ class RegistryClient
      */
     public function register(array $data): bool
     {
-        return $this->client->register($data);
+        $name= $data['name']??'';
+        $host= $data['host']??'';
+        $port= $data['port']??'';
+        $key = "{$this->cacheKeyPrefix}:{$name}:{$host}:{$port}";
+        $time = time();
+        $data['registered_at'] = $time;
+        $data['last_heartbeat'] = $time;
+        $lastData = $this->cache->get($key);
+        if (!empty($lastData)) {
+            $data['last_registered_at'] = $lastData['registered_at'];
+        } else {
+            $data['last_registered_at'] = $time;
+        }
+        return $this->cache->set($key, $data, $this->heartbeatInterval * 2);
     }
 
     /**
      * @inheritDoc
      */
-    public function unregister(string $serviceName): bool
+    public function unregister(string $key): bool
     {
-        return $this->client->unregister($serviceName);
+        $key = "{$this->cacheKeyPrefix}:{$key}";
+        if ($this->cache->has($key)) {
+            return $this->cache->delete($key);
+        }
+        return true;
     }
 
     /**
      * @inheritDoc
      */
-    public function heartbeat(string $serviceName): bool
+    public function heartbeat(string $key): bool
     {
-        return $this->client->heartbeat($serviceName);
+        $key = "{$this->cacheKeyPrefix}:{$key}";
+        $lastData = $this->cache->get($key);
+        if ($lastData) {
+            $lastData['last_heartbeat'] = time();
+            return $this->cache->set($key, $lastData, $this->heartbeatInterval * 2);
+        }
+        return false;
     }
 
     /**
      * @inheritDoc
      */
-    public function health(string $serviceName): bool
+    public function health(string $key): bool
     {
-        return $this->client->health($serviceName);
+        $key = "{$this->cacheKeyPrefix}:{$key}";
+        $lastData = $this->cache->get($key);
+        if ($lastData) {
+            return time() - $lastData['last_heartbeat'] <= $this->heartbeatInterval * 2;
+        }
+        return false;
     }
 
     /**
      * @inheritDoc
      */
-    public function discover(string $serviceName): array
+    public function discover(string $name): array
     {
-        return $this->client->discover($serviceName);
+        $patten = "{$this->cacheKeyPrefix}:{$name}:*";
+        $datas = [];
+        $now = time();
+        $this->redisScan($patten, function ($key) use (&$datas, $now) {
+            $content = $this->cache->get($key);
+            if (is_array($content) && !empty($content)) {
+                $content['health'] = $now - $content['last_heartbeat'] <= $this->heartbeatInterval * 2 ? true : false;
+                $datas[] = $content;
+            }
+        });
+        return $datas;
     }
 
-    /**
-     * @inheritDoc
-     */
-    public function list(string $serviceName = ''): array
-    {
-        return $this->client->list($serviceName);
-    }
 
-    /**
-     * @inheritDoc
-     */
-    public function listHost(string $host = '*', string $port = '*'): array
+    private function redisScan(string $pattern = '*', ?callable $callback = null, int $count = 100): void
     {
-        return $this->client->listHost($host, $port);
+        // 验证并修正计数参数，确保其为有效正值
+        if ($count <= 0) {
+            $count = 100; // 使用默认值
+        }
+        $redis = $this->cache->handler();
+        $iterator = null;
+        // 循环执行 SCAN 命令直到遍历完成
+        while (true) {
+            $result = $redis->scan($iterator, $pattern, $count);
+
+            // 检查结果是否为有效数组，若无效则终止循环
+            if ($result === false || !is_array($result)) {
+                break;
+            }
+
+            // 如果提供了回调函数，则执行它
+            if ($callback !== null) {
+                $callback($result);
+            }
+
+            // 当迭代器变为0时，扫描完成
+            if ($iterator === 0 || $iterator === '0') {
+                break;
+            }
+        }
     }
 }

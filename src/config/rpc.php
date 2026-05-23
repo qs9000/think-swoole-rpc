@@ -10,36 +10,17 @@ return [
     // 注册中心配置 (Registry)
     // ========================================
     'registry' => [
-        // 注册中心主机地址
-        'host' => '127.0.0.1',
-        // 注册中心端口
-        'port' => 9000,
-        // 请求超时时间（毫秒）
-        'timeout' => 5000,
-        // 连接超时时间（毫秒）
-        'connect_timeout' => 1000,
-        'exclude_private' => false, //是否用公网IP注册  
+        'cache' => 'redis',
+        'exclude_private' => false, //是否用公网IP注册
+        'registry_class' => null, //自定义注册中心类,必须实现RegistryClientInterface
         'rpc' => [
             'enable' => true,
-            'method' => 'rpc', // 请求方法[rpc,http]，默认为 rpc
-            // 心跳间隔（秒）- 服务保活频率
             'heartbeat_interval' => 30,
-            // 认证 Token（如果注册中心需要鉴权）
-            'token' => null,
-            // 基础 URL（可选，如果不设置则自动根据 host:port 生成）
-            'base_url' => null,
         ],
         'server' => [
             'enable' => true,
-            'method' => 'rpc', // 请求方法[rpc,http]，默认为 rpc
-            // 心跳间隔（秒）- 服务保活频率
             'heartbeat_interval' => 30,
-            // 认证 Token（如果注册中心需要鉴权）
-            'token' => null,
-            // 基础 URL（可选，如果不设置则自动根据 host:port 生成）
-            'base_url' => null,
         ],
-
     ],
 
     // ========================================
@@ -85,7 +66,7 @@ return [
         ], //中间件配置
         // 熔断器配置 (Circuit Breaker)
         'circuitbreaker' => [
-            'cache'=>'file', // 熔断器列表缓存方式，对应config/cache.php中的缓存配置项，默认为 file
+            'cache' => 'file', // 熔断器列表缓存方式，对应config/cache.php中的缓存配置项，默认为 file
             // 失败阈值 - 连续失败多少次后开启熔断
             'failure_threshold' => 5,
             // 成功阈值 - 半开状态下连续成功多少次后恢复
@@ -96,7 +77,7 @@ return [
             'request_timeout' => 5000,
         ],
     ],
-    'server' => [     
+    'server' => [
         'auth' => [
             'enable' => false,
             'cache' => 'system', //服务器密钥缓存，对应config/cache.php中的缓存配置项，默认为system
