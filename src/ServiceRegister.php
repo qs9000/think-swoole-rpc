@@ -118,10 +118,18 @@ class ServiceRegister
                 if (!is_array($serverInfo)) {
                     continue;
                 }
-                if (in_array($serverName, ['http', 'websocket', 'rpc'], true) && $serverInfo['enable']) {
+                if (in_array($serverName, ['http', 'websocket'], true) && ($serverInfo['enable'] ?? false)) {
                     $serverInfo['host'] = $serverIp;
                     $serverInfo['name'] = $serverName;
                     $this->serversData[] = $serverInfo;
+                }
+                if ($serverName === 'rpc') {
+                    $rpcServerInfo = $serverInfo['server'];
+                    if ($rpcServerInfo['enable'] ?? false) {
+                        $rpcServerInfo['host'] = $serverIp;
+                        $rpcServerInfo['name'] = $serverName;
+                        $this->serversData[] = $rpcServerInfo;
+                    }
                 }
             }
 
@@ -138,13 +146,13 @@ class ServiceRegister
         // 处理 RPC 服务注册配置
         $rpcConfig = $this->registryConfig['rpc'] ?? [];
         $swooleRpc = $swooleConfig['rpc']['server'] ?? [];
-        if ($rpcConfig['enable'] && ($swooleRpc['enable'] ?? false)) {
+        if (($rpcConfig['enable'] ?? false) && ($swooleRpc['enable'] ?? false)) {
             $host = $serverIp;
             $port = $swooleRpc['port'] ?? 0;
             $weight = $swooleRpc['weight'] ?? 100;
             $metadata = $swooleRpc['metadata'] ?? [];
 
-            if ($port > 0 && !empty($swooleRpc['services'])) {
+            if ($port > 0 && !empty($swooleRpc['services'] ?? [])) {
                 foreach ($swooleRpc['services'] as $serviceName => $interface) {
                     $name = class_basename($interface);
                     $this->servicesData[] = [
