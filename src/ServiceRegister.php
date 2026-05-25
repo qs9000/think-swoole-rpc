@@ -10,7 +10,7 @@ use qs9000\rpc\RpcException;
 use qs9000\rpc\server\ServerInfo;
 use think\facade\Log;
 use think\facade\Config;
-use Swoole\Timer;
+use swoole\Timer;
 
 /**
  * 服务注册器
@@ -98,7 +98,7 @@ class ServiceRegister
         $this->registryConfig = Config::get('rpc.registry', []);
         $registryClass = $this->registryConfig['registry_class'];
         // 获取基础配置
-        $config = Config::get('swoole', []);
+        $swooleConfig = Config::get('swoole', []);
 
         // 安全获取 ServerInfo 和 IP
         try {
@@ -112,13 +112,13 @@ class ServiceRegister
             return;
         }
         $serverConfig = $this->registryConfig['server'] ?? [];
-        if (!empty($serverConfig['enable'])) {
-            foreach ($config as $serverName => $serverInfo) {
+        if ($serverConfig['enable']) {
+            foreach ($swooleConfig as $serverName => $serverInfo) {
                 // 确保 $serverInfo 是数组
                 if (!is_array($serverInfo)) {
                     continue;
                 }
-                if (in_array($serverName, ['http', 'websocket', 'rpc'], true)) {
+                if (in_array($serverName, ['http', 'websocket', 'rpc'], true) && $serverInfo['enable']) {
                     $serverInfo['host'] = $serverIp;
                     $serverInfo['name'] = $serverName;
                     $this->serversData[] = $serverInfo;
@@ -127,7 +127,7 @@ class ServiceRegister
 
             if (!empty($this->serversData)) {
                 try {
-                    $this->serverRegistryClient = app()->make($registryClass ?? RegistryClient::class, ['server']);
+                    $this->serverRegistryClient = app()->make($registryClass ?? RegistryClient::class, ['server'], true);
                     $this->serverEnable = true;
                 } catch (\Throwable $e) {
                     Log::error("[Registry] 创建 Server 注册客户端失败: " . $e->getMessage());
@@ -137,17 +137,15 @@ class ServiceRegister
 
         // 处理 RPC 服务注册配置
         $rpcConfig = $this->registryConfig['rpc'] ?? [];
-        if (!empty($rpcConfig['enable']) && isset($config['rpc'])) {
-            $rpc = $config['rpc'] ?? [];
+        $swooleRpc = $swooleConfig['rpc']['server'] ?? [];
+        if ($rpcConfig['enable'] && ($swooleRpc['enable'] ?? false)) {
             $host = $serverIp;
-            $port = $rpc['port'] ?? 0;
+            $port = $swooleRpc['port'] ?? 0;
+            $weight = $swooleRpc['weight'] ?? 100;
+            $metadata = $swooleRpc['metadata'] ?? [];
 
-            // 修正拼写错误: metadate -> metadata
-            $weight = $rpc['weight'] ?? 100;
-            $metadata = $rpc['metadata'] ?? [];
-
-            if ($port > 0 && !empty($rpc['services'])) {
-                foreach ($rpc['services'] as $serviceName => $interface) {
+            if ($port > 0 && !empty($swooleRpc['services'])) {
+                foreach ($swooleRpc['services'] as $serviceName => $interface) {
                     $name = class_basename($interface);
                     $this->servicesData[] = [
                         'name' => $name,
@@ -160,7 +158,7 @@ class ServiceRegister
 
                 if (!empty($this->servicesData)) {
                     try {
-                        $this->rpcRegistryClient = app()->make($registryClass ?? RegistryClient::class, ['rpc']);
+                        $this->rpcRegistryClient = app()->make($registryClass ?? RegistryClient::class, ['rpc'], true);
                         $this->rpcEnable = true;
                     } catch (\Throwable $e) {
                         Log::error("[Registry] 创建 RPC 注册客户端失败: " . $e->getMessage());
@@ -183,10 +181,12 @@ class ServiceRegister
             return;
         }
 
-        $event->listen('swoole.init', function () {
+        $event->listen('swoole.workerStart', function (string $workerId) {
             try {
-                $this->register();
-                $this->heartbeat();
+                if (str_ends_with($workerId, '#0')) {
+                    $this->register();
+                    $this->heartbeat();
+                }
             } catch (\Throwable $e) {
                 Log::error("[Registry] 初始化过程中发生致命错误: " . $e->getMessage(), $e->getTrace());
             }
@@ -241,11 +241,11 @@ class ServiceRegister
     private function register(): void
     {
         if (!empty($this->servicesData) && $this->rpcRegistryClient && $this->rpcEnable) {
-            foreach ($this->servicesData as $serviceData) {
+            foreach ($this->servicesData as $service) {
                 try {
-                    $this->rpcRegistryClient->register($serviceData);
+                    $this->rpcRegistryClient->register($service);
                 } catch (\Throwable $e) {
-                    Log::error("[RPC]服务{$serviceData['name']}注册失败：" . $e->getMessage(), $e->getTrace());
+                    Log::error("[RPC]服务{$service['name']}注册失败：" . $e->getMessage(), $e->getTrace());
                 }
             }
         }
@@ -276,22 +276,19 @@ class ServiceRegister
             Log::warning("[Registry] Swoole Timer 不存在，无法启动心跳机制");
             return;
         }
-        $config = $this->registryConfig;
         if (!empty($this->servicesData) && $this->rpcEnable && $this->rpcRegistryClient) {
-            $rpcConfig = $config['rpc'] ?? [];
+            $rpcConfig = $this->registryConfig['rpc'] ?? [];
             $heartbeatInterval = min(300, max(5, (int)($rpcConfig['heartbeat_interval'] ?? 30)));
-            $this->rpcHeartbeatTimerId = Timer::tick($heartbeatInterval * 1000, function () {
-                // 再次检查实例状态，防止在极端情况下对象部分销毁
-                if (empty($this->servicesData) || !$this->rpcRegistryClient) {
-                    return;
-                }
+            $servicesData = $this->servicesData;
+            $rpcRegistryClient = $this->rpcRegistryClient;
+            $this->rpcHeartbeatTimerId = Timer::tick($heartbeatInterval * 1000, function () use ($servicesData, $rpcRegistryClient) {
                 try {
-                    foreach ($this->servicesData as $service) {
+                    foreach ($servicesData as $service) {
                         if (!isset($service['name'], $service['host'], $service['port'])) {
                             continue;
                         }
                         $serviceName = "{$service['name']}:{$service['host']}:{$service['port']}";
-                        $this->rpcRegistryClient->heartbeat($serviceName);
+                        $rpcRegistryClient->heartbeat($serviceName);
                     }
                 } catch (\Throwable $e) {
                     Log::error("RPC服务发送心跳失败: " . $e->getMessage(), $e->getTrace());
@@ -300,21 +297,23 @@ class ServiceRegister
         }
 
         if (!empty($this->serversData) && $this->serverEnable && $this->serverRegistryClient) {
-            $serverConfig = $config['server'] ?? [];
+            $serverConfig = $this->registryConfig['server'] ?? [];
             $heartbeatInterval = min(300, max(5, (int)($serverConfig['heartbeat_interval'] ?? 30)));
-            $this->serverHeartbeatTimerId = Timer::tick($heartbeatInterval * 1000, function () {
+            $serversData = $this->serversData;
+            $serverRegistryClient = $this->serverRegistryClient;
+            $this->serverHeartbeatTimerId = Timer::tick($heartbeatInterval * 1000, function () use ($serversData, $serverRegistryClient) {
                 // 再次检查实例状态，防止在极端情况下对象部分销毁
-                if (empty($this->serversData) || !$this->serverRegistryClient) {
+                if (empty($serversData) || !$serverRegistryClient) {
                     return;
                 }
 
                 try {
-                    foreach ($this->serversData as $server) {
+                    foreach ($serversData as $server) {
                         if (!isset($server['name'], $server['host'], $server['port'])) {
                             continue;
                         }
                         $serverName = "{$server['name']}:{$server['host']}:{$server['port']}";
-                        $this->serverRegistryClient->heartbeat($serverName);
+                        $serverRegistryClient->heartbeat($serverName);
                     }
                 } catch (\Throwable $e) {
                     Log::error("服务器发送心跳失败: " . $e->getMessage(), $e->getTrace());

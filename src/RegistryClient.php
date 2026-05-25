@@ -4,10 +4,9 @@ declare(strict_types=1);
 
 namespace qs9000\rpc;
 
-use think\cache\driver\Redis;
-use think\facade\Cache;
 use think\facade\Config;
 use qs9000\rpc\registry\RegistryClientInterface;
+use Swoole\Coroutine;
 
 /**
  * 注册中心客户端
@@ -24,27 +23,55 @@ use qs9000\rpc\registry\RegistryClientInterface;
  */
 class RegistryClient implements RegistryClientInterface
 {
-    private Redis $cache;
     private string $cacheKeyPrefix;
-
+    private string $cacheStore;
     private int $heartbeatInterval;
+    private string $type;
+    private mixed $cacheInstance;
 
     /**
      *@inheritDoc
      */
     public function __construct(string $type = 'rpc')
     {
+        $this->type = $type;
         $this->cacheKeyPrefix = match ($type) {
             'rpc' => 'registry:rpc:',
             'server' => 'registry:server:',
             default => throw new \Exception('非法的注册类型'),
         };
-        $cache = Config::get('rpc.registry.cache');
-        $this->cache = Cache::store($cache);
-        if (!$this->cache instanceof Redis) {
-            throw new \Exception('注册中心必须是Redis缓存');
-        }
+        $this->cacheStore = Config::get('rpc.registry.cache');
         $this->heartbeatInterval = Config::get("rpc.registry.{$type}.heartbeat_interval", 30);
+
+        // 初始化缓存实例
+        $this->cacheInstance = app()->cache->store($this->cacheStore);
+    }
+
+    /**
+     * 执行Redis操作的协程安全包装器
+     * 
+     * 使用协程锁确保同一时间只有一个协程操作Redis连接
+     */
+    private function executeSafely(callable $operation)
+    {
+        // 检查是否在Swoole协程环境中
+        if (extension_loaded('swoole') && Coroutine::getCid() > 0) {
+            // 在协程环境中，使用锁确保Redis连接安全
+            static $lock;
+            if (!$lock) {
+                $lock = new \Swoole\Coroutine\Lock();
+            }
+
+            $lock->lock();
+            try {
+                return $operation($this->cacheInstance);
+            } finally {
+                $lock->unlock();
+            }
+        } else {
+            // 非协程环境，直接执行
+            return $operation($this->cacheInstance);
+        }
     }
 
     /**
@@ -52,20 +79,23 @@ class RegistryClient implements RegistryClientInterface
      */
     public function register(array $data): bool
     {
-        $name= $data['name']??'';
-        $host= $data['host']??'';
-        $port= $data['port']??'';
-        $key = "{$this->cacheKeyPrefix}:{$name}:{$host}:{$port}";
-        $time = time();
-        $data['registered_at'] = $time;
-        $data['last_heartbeat'] = $time;
-        $lastData = $this->cache->get($key);
-        if (!empty($lastData)) {
-            $data['last_registered_at'] = $lastData['registered_at'];
-        } else {
-            $data['last_registered_at'] = $time;
-        }
-        return $this->cache->set($key, $data, $this->heartbeatInterval * 2);
+        return $this->executeSafely(function ($cache) use ($data) {
+            $name = $data['name'] ?? '';
+            $host = $data['host'] ?? '';
+            $port = $data['port'] ?? '';
+            $key = "{$this->cacheKeyPrefix}{$name}:{$host}:{$port}";
+            $time = time();
+            $data['registered_at'] = $time;
+            $data['last_heartbeat'] = $time;
+
+            $lastData = $cache->get($key);
+            if (!empty($lastData)) {
+                $data['last_registered_at'] = $lastData['registered_at'];
+            } else {
+                $data['last_registered_at'] = $time;
+            }
+            return $cache->set($key, $data, $this->heartbeatInterval * 2);
+        });
     }
 
     /**
@@ -73,11 +103,13 @@ class RegistryClient implements RegistryClientInterface
      */
     public function unregister(string $key): bool
     {
-        $key = "{$this->cacheKeyPrefix}:{$key}";
-        if ($this->cache->has($key)) {
-            return $this->cache->delete($key);
-        }
-        return true;
+        return $this->executeSafely(function ($cache) use ($key) {
+            $key = "{$this->cacheKeyPrefix}{$key}";
+            if ($cache->has($key)) {
+                return $cache->delete($key);
+            }
+            return true;
+        });
     }
 
     /**
@@ -85,13 +117,15 @@ class RegistryClient implements RegistryClientInterface
      */
     public function heartbeat(string $key): bool
     {
-        $key = "{$this->cacheKeyPrefix}:{$key}";
-        $lastData = $this->cache->get($key);
-        if ($lastData) {
-            $lastData['last_heartbeat'] = time();
-            return $this->cache->set($key, $lastData, $this->heartbeatInterval * 2);
-        }
-        return false;
+        return $this->executeSafely(function ($cache) use ($key) {
+            $key = "{$this->cacheKeyPrefix}{$key}";
+            $lastData = $cache->get($key);
+            if ($lastData) {
+                $lastData['last_heartbeat'] = time();
+                return $cache->set($key, $lastData, $this->heartbeatInterval * 2);
+            }
+            return false;
+        });
     }
 
     /**
@@ -99,12 +133,14 @@ class RegistryClient implements RegistryClientInterface
      */
     public function health(string $key): bool
     {
-        $key = "{$this->cacheKeyPrefix}:{$key}";
-        $lastData = $this->cache->get($key);
-        if ($lastData) {
-            return time() - $lastData['last_heartbeat'] <= $this->heartbeatInterval * 2;
-        }
-        return false;
+        return $this->executeSafely(function ($cache) use ($key) {
+            $key = "{$this->cacheKeyPrefix}{$key}";
+            $lastData = $cache->get($key);
+            if ($lastData) {
+                return time() - $lastData['last_heartbeat'] <= $this->heartbeatInterval * 2;
+            }
+            return false;
+        });
     }
 
     /**
@@ -112,19 +148,22 @@ class RegistryClient implements RegistryClientInterface
      */
     public function discover(string $name): array
     {
-        $patten = "{$this->cacheKeyPrefix}:{$name}:*";
+        $pattern = "{$this->cacheKeyPrefix}{$name}:*";
         $datas = [];
         $now = time();
-        $this->redisScan($patten, function ($key) use (&$datas, $now) {
-            $content = $this->cache->get($key);
-            if (is_array($content) && !empty($content)) {
-                $content['health'] = $now - $content['last_heartbeat'] <= $this->heartbeatInterval * 2 ? true : false;
-                $datas[] = $content;
-            }
+
+        $this->redisScan($pattern, function ($key) use (&$datas, $now) {
+            $this->executeSafely(function ($cache) use ($key, &$datas, $now) {
+                $content = $cache->get($key);
+                if (is_array($content) && !empty($content)) {
+                    $content['health'] = $now - $content['last_heartbeat'] <= $this->heartbeatInterval * 2 ? true : false;
+                    $datas[] = $content;
+                }
+            });
         });
+
         return $datas;
     }
-
 
     private function redisScan(string $pattern = '*', ?callable $callback = null, int $count = 100): void
     {
@@ -132,26 +171,29 @@ class RegistryClient implements RegistryClientInterface
         if ($count <= 0) {
             $count = 100; // 使用默认值
         }
-        $redis = $this->cache->handler();
-        $iterator = null;
-        // 循环执行 SCAN 命令直到遍历完成
-        while (true) {
-            $result = $redis->scan($iterator, $pattern, $count);
 
-            // 检查结果是否为有效数组，若无效则终止循环
-            if ($result === false || !is_array($result)) {
-                break;
-            }
+        $this->executeSafely(function ($cache) use ($pattern, $callback, $count) {
+            $redis = $cache->handler();
+            $iterator = null;
+            // 循环执行 SCAN 命令直到遍历完成
+            while (true) {
+                $result = $redis->scan($iterator, $pattern, $count);
 
-            // 如果提供了回调函数，则执行它
-            if ($callback !== null) {
-                $callback($result);
-            }
+                // 检查结果是否为有效数组，若无效则终止循环
+                if ($result === false || !is_array($result)) {
+                    break;
+                }
 
-            // 当迭代器变为0时，扫描完成
-            if ($iterator === 0 || $iterator === '0') {
-                break;
+                // 如果提供了回调函数，则执行它
+                if ($callback !== null) {
+                    $callback($result);
+                }
+
+                // 当迭代器变为0时，扫描完成
+                if ($iterator === 0 || $iterator === '0') {
+                    break;
+                }
             }
-        }
+        });
     }
 }
