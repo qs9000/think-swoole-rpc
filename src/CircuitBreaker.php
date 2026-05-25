@@ -65,24 +65,20 @@ class CircuitBreaker
             $config = array_merge($rpcConfig, $config);
         }
 
-        $this->failureThreshold = max(1, (int)($config['failure_threshold'] ?? 5));
-        $this->successThreshold = max(1, (int)($config['success_threshold'] ?? 3));
-        $this->timeout = max(1, (int)($config['timeout'] ?? 60));
+        $this->failureThreshold = max(1, $config['failure_threshold'] ?? 5);
+        $this->successThreshold = max(1, $config['success_threshold'] ?? 3);
+        $this->timeout = max(1, $config['timeout'] ?? 60);
         $this->config = $config;
         $cache = $this->config['cache'] ?? 'file';
         if ($cache === 'file') {
             $this->redis = null;
             $this->redisAvailable = false;
         } else {
-            try {
-                $this->redis = Cache::store($cache)->handler();
-            } catch (\Throwable $e) {
-                Log::warning('CircuitBreaker: Cache handler initialization failed: ' . $e->getMessage());
-                $this->redis = null;
-                $this->redisAvailable = false;
-            }
+            $this->redis = Cache::store($cache)->handler();
         }
     }
+
+
 
     /**
      * 检查服务是否处于熔断状态
@@ -93,7 +89,6 @@ class CircuitBreaker
     public function isOpen(string $serviceName): bool
     {
         if (!$this->redisAvailable) {
-            Log::warning("CircuitBreaker: Redis unavailable for service {$serviceName}, fallback to allowing requests");
             return false; // Redis 不可用时降级为允许所有请求
         }
 
@@ -102,7 +97,6 @@ class CircuitBreaker
         if ($state === self::STATE_OPEN) {
             if ($this->shouldAttemptReset($serviceName)) {
                 $this->setState($serviceName, self::STATE_HALF_OPEN);
-                Log::info("CircuitBreaker: Service {$serviceName} state changed from OPEN to HALF_OPEN");
                 return false;
             }
             return true;
@@ -133,37 +127,33 @@ class CircuitBreaker
             return;
         }
 
-        try {
-            $state = $this->getState($serviceName);
+        $state = $this->getState($serviceName);
 
-            if ($state === self::STATE_HALF_OPEN) {
-                // 半开状态：使用 Lua 脚本原子地增加成功计数，并判断是否达到阈值
-                $lua = <<<LUA
-                    local key = KEYS[1]
-                    local threshold = tonumber(ARGV[1])
-                    -- 增加成功计数
-                    local successes = redis.call('hincrby', key, 'successes', 1)
-                    local currentState = redis.call('hget', key, 'state')
-                    if currentState == 'half_open' and successes >= threshold then
-                        -- 达到阈值，重置计数并切换到 closed
-                        redis.call('hmset', key, 'state', 'closed', 'failures', 0, 'successes', 0)
-                        -- 可选：记录状态变更日志
-                        return 1
-                    end
-                    return 0
+        if ($state === self::STATE_HALF_OPEN) {
+            // 半开状态：使用 Lua 脚本原子地增加成功计数，并判断是否达到阈值
+            $lua = <<<LUA
+                local key = KEYS[1]
+                local threshold = tonumber(ARGV[1])
+                -- 增加成功计数
+                local successes = redis.call('hincrby', key, 'successes', 1)
+                local currentState = redis.call('hget', key, 'state')
+                if currentState == 'half_open' and successes >= threshold then
+                    -- 达到阈值，重置计数并切换到 closed
+                    redis.call('hmset', key, 'state', 'closed', 'failures', 0, 'successes', 0)
+                    -- 可选：记录状态变更日志
+                    return 1
+                end
+                return 0
 LUA;
-                $result = $this->redis->eval($lua, [$this->getHashKey($serviceName), $this->successThreshold], 1);
-                if ($result == 1) {
-                    Log::info("熔断器服务 {$serviceName} 恢复成功，状态从 HALF_OPEN 转为 CLOSED");
-                }
-            } elseif ($state === self::STATE_CLOSED) {
-                // 关闭状态下的成功，重置失败计数
-                $this->resetFailureCount($serviceName);
+            $result = $this->redis->eval($lua, [$this->getHashKey($serviceName), $this->successThreshold], 1);
+            if ($result == 1) {
+                Log::info("熔断器服务 {$serviceName} 恢复成功，状态从 HALF_OPEN 转为 CLOSED");
             }
-            // OPEN 状态下不会调用 recordSuccess
-        } catch (\Throwable $e) {
-            Log::error("CircuitBreaker recordSuccess failed for service {$serviceName}: " . $e->getMessage());
+        } elseif ($state === self::STATE_CLOSED) {
+            // 关闭状态下的成功，重置失败计数
+            $this->resetFailureCount($serviceName);
         }
+        // OPEN 状态下不会调用 recordSuccess
     }
 
     /**
@@ -177,38 +167,34 @@ LUA;
             return;
         }
 
-        try {
-            $state = $this->getState($serviceName);
+        $state = $this->getState($serviceName);
 
-            if ($state === self::STATE_HALF_OPEN) {
-                // 半开状态失败：立即回到 OPEN，并记录开启时间
-                $this->setState($serviceName, self::STATE_OPEN);
-                $this->recordOpenTime($serviceName);
-                Log::warning("熔断器服务 {$serviceName} 试探请求失败，状态回退到 OPEN");
-            } elseif ($state === self::STATE_CLOSED) {
-                // 使用 Lua 脚本原子地增加失败计数并判断是否达到阈值
-                $lua = <<<LUA
-                    local key = KEYS[1]
-                    local threshold = tonumber(ARGV[1])
-                    local now = tonumber(ARGV[2])
-                    local failures = redis.call('hincrby', key, 'failures', 1)
-                    redis.call('hset', key, 'last_failure_time', now)
-                    if failures >= threshold then
-                        -- 达到阈值，切换到 OPEN 并记录开启时间
-                        redis.call('hmset', key, 'state', 'open', 'opened_time', now)
-                        return 1
-                    end
-                    return 0
+        if ($state === self::STATE_HALF_OPEN) {
+            // 半开状态失败：立即回到 OPEN，并记录开启时间
+            $this->setState($serviceName, self::STATE_OPEN);
+            $this->recordOpenTime($serviceName);
+            Log::warning("熔断器服务 {$serviceName} 试探请求失败，状态回退到 OPEN");
+        } elseif ($state === self::STATE_CLOSED) {
+            // 使用 Lua 脚本原子地增加失败计数并判断是否达到阈值
+            $lua = <<<LUA
+                local key = KEYS[1]
+                local threshold = tonumber(ARGV[1])
+                local now = tonumber(ARGV[2])
+                local failures = redis.call('hincrby', key, 'failures', 1)
+                redis.call('hset', key, 'last_failure_time', now)
+                if failures >= threshold then
+                    -- 达到阈值，切换到 OPEN 并记录开启时间
+                    redis.call('hmset', key, 'state', 'open', 'opened_time', now)
+                    return 1
+                end
+                return 0
 LUA;
-                $result = $this->redis->eval($lua, [$this->getHashKey($serviceName), $this->failureThreshold, time()], 1);
-                if ($result == 1) {
-                    Log::warning("熔断器服务 {$serviceName} 失败次数达到阈值 {$this->failureThreshold}，开启熔断");
-                }
+            $result = $this->redis->eval($lua, [$this->getHashKey($serviceName), $this->failureThreshold, time()], 1);
+            if ($result == 1) {
+                Log::warning("熔断器服务 {$serviceName} 失败次数达到阈值 {$this->failureThreshold}，开启熔断");
             }
-            // OPEN 状态下不会调用 recordFailure
-        } catch (\Throwable $e) {
-            Log::error("CircuitBreaker recordFailure failed for service {$serviceName}: " . $e->getMessage());
         }
+        // OPEN 状态下不会调用 recordFailure
     }
 
     /**

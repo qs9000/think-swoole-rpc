@@ -6,10 +6,7 @@ namespace qs9000\rpc;
 
 use qs9000\rpc\contract\ServiceInstanceInterface;
 use qs9000\rpc\loadbalancer\LoadBalancerFactory;
-use qs9000\rpc\RegistryClient;
-use think\facade\Config;
 use think\cache\Driver;
-use think\facade\Log;
 
 /**
  * 服务发现类
@@ -18,8 +15,10 @@ use think\facade\Log;
  */
 class ServiceDiscover
 {
+    private Driver $cache;
+    private mixed $app;
     private array $config;
-    private RegistryClient $registryClient;
+
     /**
      * 构造函数
      *
@@ -27,9 +26,9 @@ class ServiceDiscover
      */
     public function __construct()
     {
-        $registryClass = Config::get('rpc.registry.registry_class');
-        $this->registryClient = app()->make($registryClass ?: RegistryClient::class,['rpc']);
-        $this->config = Config::get('rpc.discovery');
+        $this->app = app();
+        $this->config = $this->app->config->get('rpc.discovery', []);
+        $this->cache = $this->app->cache->store($this->config['cache'] ?? 'file');
     }
 
     /**
@@ -45,22 +44,110 @@ class ServiceDiscover
      */
     public function discover(string $serviceName): ServiceInstanceInterface
     {
-        $services = $this->registryClient->discover($serviceName);
-        if (!is_array($services) || count($services) === 0) {
-            throw new RpcException('未从注册中心获取到RPC服务实例：' . $serviceName);
+        $cacheKey = $this->getCacheKey($serviceName);
+        $cachedData = $this->cache->get($cacheKey);
+
+        if (is_array($cachedData) && !empty($cachedData)) {
+            $serviceInstances = $cachedData;
+        } else {
+            // 缓存锁，防止缓存击穿
+            $lockKey = $cacheKey . '_lock';
+            $lockAcquired = $this->cache->add($lockKey, 1, 5); // 5秒锁
+            if ($lockAcquired) {
+                try {
+                    $registryClient = $this->app->make(RegistryClient::class, ['rpc']);
+                    $serviceInstances = $registryClient->discover('rpc', $serviceName);
+                    if (!is_array($serviceInstances) || empty($serviceInstances)) {
+                        throw new RpcException("获取的RPC服务信息无效: {$serviceName}");
+                    }
+                    $ttl = $this->config['cache_ttl'] ?? 600;
+                    $this->cache->set($cacheKey, $serviceInstances, $ttl);
+                } finally {
+                    $this->cache->delete($lockKey);
+                }
+            } else {
+                // 等待锁释放，最多3秒
+                $wait = 0;
+                while (!$this->cache->has($cacheKey) && $wait < 30) {
+                    usleep(100000);
+                    $wait++;
+                }
+                $serviceInstances = $this->cache->get($cacheKey);
+                if (!is_array($serviceInstances) || empty($serviceInstances)) {
+                    throw new RpcException("获取RPC服务信息超时: {$serviceName}");
+                }
+            }
         }
-        
-        if (count($services) === 1) {
-            $instance = $services[0];
+
+        if (!is_array($serviceInstances) || count($serviceInstances) === 0) {
+            throw new RpcException("获取的RPC服务信息无效: {$serviceName}");
+        }
+
+        if (count($serviceInstances) === 1) {
+            $instance = $serviceInstances[0];
         } else {
             $strategy = $this->config['loadbalancer'] ?? 'random';
             try {
-                $loadBalancer = app()->make(LoadBalancerFactory::class)->create($strategy);
-                $instance = $loadBalancer->select($services);
+                $loadBalancer = $this->app->make(LoadBalancerFactory::class)->create($strategy);
+                $instance = $loadBalancer->select($serviceInstances);
             } catch (\Throwable $e) {
                 throw new RpcException("RPC负载均衡器选择失败: {$serviceName}. Error: " . $e->getMessage(), 0, $e);
             }
         }
-        return app()->make(ServiceInstance::class)->fromArray($instance);
+        return $this->app->make(ServiceInstance::class)->fromArray($instance);
+    }
+
+    /**
+     * 清除指定服务的缓存
+     *
+     * @param string $serviceName 服务名称
+     */
+    public function clearCache(string $serviceName): void
+    {
+        $cacheKey = $this->getCacheKey($serviceName);
+        $this->cache->delete($cacheKey);
+    }
+
+    /**
+     * 生成服务缓存键
+     *
+     * @param string $serviceName 服务名称
+     * @return string 缓存键字符串
+     */
+    private function getCacheKey(string $serviceName): string
+    {
+        return 'rpc_service_' . $serviceName;
+    }
+    
+    /**
+     * 清理过期缓存
+     * 扫描所有服务缓存并删除过期项
+     */
+    public function cleanupExpiredCache(): void
+    {
+        // 对于文件缓存，我们无法直接扫描键，因此这个方法主要用于其他缓存驱动
+        // 对于文件缓存，依赖文件系统的过期机制即可
+    }
+
+    /**
+     * 预热服务发现缓存
+     * @param string $serviceName 服务名称
+     * @return bool 是否预热成功
+     */
+    public function warmUpCache(string $serviceName): bool
+    {
+        try {
+            $registryClient = $this->app->make(RegistryClient::class, ['rpc']);
+            $serviceInstances = $registryClient->discover('rpc', $serviceName);
+            if (!is_array($serviceInstances) || empty($serviceInstances)) {
+                return false;
+            }
+            $ttl = $this->config['cache_ttl'] ?? 600;
+            $cacheKey = $this->getCacheKey($serviceName);
+            $this->cache->set($cacheKey, $serviceInstances, $ttl);
+            return true;
+        } catch (\Exception $e) {
+            return false;
+        }
     }
 }

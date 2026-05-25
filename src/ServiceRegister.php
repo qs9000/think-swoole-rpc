@@ -96,7 +96,7 @@ class ServiceRegister
     {
         // 安全地获取配置，防止键不存在导致错误
         $this->registryConfig = Config::get('rpc.registry', []);
-        $registryClass = $this->registryConfig['registry_class'];
+        $registryClass = $this->registryConfig['registry_class'] ?? null;
         // 获取基础配置
         $swooleConfig = Config::get('swoole', []);
 
@@ -112,7 +112,7 @@ class ServiceRegister
             return;
         }
         $serverConfig = $this->registryConfig['server'] ?? [];
-        if ($serverConfig['enable']) {
+        if (($serverConfig['enable'] ?? false)) {
             foreach ($swooleConfig as $serverName => $serverInfo) {
                 // 确保 $serverInfo 是数组
                 if (!is_array($serverInfo)) {
