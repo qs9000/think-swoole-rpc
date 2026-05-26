@@ -46,7 +46,7 @@ class ServerInfo implements ServerInfoInterface
         $excludePrivate = config('rpc.server.exclude_private', false);
         return [
             'server' => [
-                'ip'       => $this->getServerIp($excludePrivate) ?? 'unknown',
+                'ip'       => config('app.host_ip') ?? $this->getServerIp($excludePrivate) ?? 'unknown',
                 'hostname' => config('app.name') ?? 'unknown',
                 'arch'     => php_uname(),
                 'software' => $_SERVER['SERVER_SOFTWARE']  ?? 'unknown',
@@ -145,6 +145,10 @@ class ServerInfo implements ServerInfoInterface
      */
     public function getServerIp(bool $excludePrivate = false): string
     {
+        $hostIp = config('app.host_ip');
+        if ($hostIp) {
+            return $hostIp;
+        }
         $ips = [];
         if (function_exists('net_get_interfaces')) {
             $interfaces = net_get_interfaces();
@@ -172,7 +176,7 @@ class ServerInfo implements ServerInfoInterface
                 $ips[] = $iface;
             }
         } else {
-            return config('app.host_ip') ?? '127.0.0.1';
+            return '';
         }
 
         foreach ($ips as $ip) {
@@ -190,6 +194,6 @@ class ServerInfo implements ServerInfoInterface
                 return $ip;
             }
         }
-        return config('app.host_ip') ?? '127.0.0.1';
+        return '';
     }
 }

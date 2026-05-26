@@ -64,13 +64,82 @@ class RegistryClient implements RegistryClientInterface
 
             $lock->lock();
             try {
+                // 检查缓存实例是否仍然有效，如果Redis连接断开则重新获取
+                if ($this->shouldReconnect()) {
+                    $this->refreshCacheInstance();
+                }
                 return $operation($this->cacheInstance);
+            } catch (\Throwable $e) {
+                // 捕获Redis连接相关错误
+                if (strpos($e->getMessage(), 'Redis server went away') !== false || 
+                    strpos($e->getMessage(), 'Connection closed') !== false ||
+                    strpos($e->getMessage(), 'Connection lost') !== false) {
+                    // 尝试重新连接
+                    $this->refreshCacheInstance();
+                    try {
+                        return $operation($this->cacheInstance);
+                    } catch (\Throwable $retryException) {
+                        \think\facade\Log::error('[RegistryClient] Redis重连失败: ' . $retryException->getMessage());
+                        return false;
+                    }
+                }
+                throw $e;
             } finally {
                 $lock->unlock();
             }
         } else {
             // 非协程环境，直接执行
-            return $operation($this->cacheInstance);
+            try {
+                // 检查缓存实例是否仍然有效
+                if ($this->shouldReconnect()) {
+                    $this->refreshCacheInstance();
+                }
+                return $operation($this->cacheInstance);
+            } catch (\Throwable $e) {
+                // 捕获Redis连接相关错误
+                if (strpos($e->getMessage(), 'Redis server went away') !== false || 
+                    strpos($e->getMessage(), 'Connection closed') !== false ||
+                    strpos($e->getMessage(), 'Connection lost') !== false) {
+                    // 尝试重新连接
+                    $this->refreshCacheInstance();
+                    try {
+                        return $operation($this->cacheInstance);
+                    } catch (\Throwable $retryException) {
+                        \think\facade\Log::error('[RegistryClient] Redis重连失败: ' . $retryException->getMessage());
+                        return false;
+                    }
+                }
+                throw $e;
+            }
+        }
+    }
+
+    /**
+     * 检查是否需要重新连接
+     */
+    private function shouldReconnect(): bool
+    {
+        try {
+            $handler = $this->cacheInstance->handler();
+            if (method_exists($handler, 'ping')) {
+                $handler->ping();
+                return false;
+            }
+            return false;
+        } catch (\Throwable $e) {
+            return strpos($e->getMessage(), 'Redis server went away') !== false;
+        }
+    }
+
+    /**
+     * 刷新缓存实例
+     */
+    private function refreshCacheInstance(): void
+    {
+        try {
+            $this->cacheInstance = app()->cache->store($this->cacheStore);
+        } catch (\Throwable $e) {
+            \think\facade\Log::error('[RegistryClient] 重新连接缓存失败: ' . $e->getMessage());
         }
     }
 
