@@ -47,7 +47,7 @@ class ServerInfo implements ServerInfoInterface
         return [
             'server' => [
                 'ip'       => $this->getServerIp($excludePrivate) ?? 'unknown',
-                'hostname' => config('app.name')??'unknown',
+                'hostname' => config('app.name') ?? 'unknown',
                 'arch'     => php_uname(),
                 'software' => $_SERVER['SERVER_SOFTWARE']  ?? 'unknown',
                 'port'     => $_SERVER['SERVER_PORT']      ?? null,
@@ -172,7 +172,7 @@ class ServerInfo implements ServerInfoInterface
                 $ips[] = $iface;
             }
         } else {
-            return '';
+            return config('app.host_ip') ?? '127.0.0.1';
         }
 
         foreach ($ips as $ip) {
@@ -190,6 +190,6 @@ class ServerInfo implements ServerInfoInterface
                 return $ip;
             }
         }
-        return '';
+        return config('app.host_ip') ?? '127.0.0.1';
     }
 }
