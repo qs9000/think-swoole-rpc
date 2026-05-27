@@ -9,6 +9,7 @@ use think\swoole\Pool;
 use think\swoole\pool\Client;
 use think\swoole\rpc\client\Connector as ClientConnector;
 use Smf\ConnectionPool\ConnectionPool;
+use Swoole\Coroutine;
 use think\App;
 use think\swoole\concerns\InteractsWithRpcConnector;
 use qs9000\rpc\ServiceDiscover;
@@ -43,6 +44,13 @@ class Connector implements ClientConnector
      */
     public function runWithClient($callback)
     {
+        // 确保在 Swoole 协程环境中运行，否则 Swoole\Coroutine\Client::connect() 会超时 (errCode=110)
+        if (Coroutine::getCid() === -1) {
+            return Coroutine\run(function () use ($callback) {
+                return $this->runWithClient($callback);
+            });
+        }
+
         // 服务发现：获取目标服务的实例信息
         $serviceInstance = $this->app->make(ServiceDiscover::class)->discover($this->serviceName);
         if (!$serviceInstance) {
