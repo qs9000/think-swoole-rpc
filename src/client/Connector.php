@@ -451,7 +451,10 @@ class Connector implements ClientConnector
                         $dispatchResult = $ref->invoke($dispatcher, $this->app, $protocol, $files);
                     } catch (Throwable $e) {
                         // Dispatcher 内部异常转为 Error 响应
-                        $dispatchResult = new \think\swoole\rpc\Error($e->getCode() ?: -32603, $e->getMessage());
+                        $dispatchResult = \think\swoole\rpc\Error::make(
+                            $e->getCode() ?: \think\swoole\rpc\server\Dispatcher::INTERNAL_ERROR,
+                            $e->getMessage()
+                        );
                     }
 
                     // 编码响应 + 打包（模拟 Dispatcher::dispatch 中 $conn->send 的逻辑）
