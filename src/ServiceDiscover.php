@@ -101,7 +101,7 @@ class ServiceDiscover
                 throw new RpcException("RPC负载均衡器选择失败: {$serviceName}. Error: " . $e->getMessage(), 0, $e);
             }
         }
-        return $this->app->make(ServiceInstance::class)->fromArray($instance);
+        return ServiceInstance::fromArray($instance);
     }
 
     /**
