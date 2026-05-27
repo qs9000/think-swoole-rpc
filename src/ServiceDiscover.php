@@ -53,7 +53,13 @@ class ServiceDiscover
         } else {
             // 缓存锁，防止缓存击穿
             $lockKey = $cacheKey . '_lock';
-            $lockAcquired = $this->cache->add($lockKey, 1, 5); // 5秒锁
+            // 使用 has+set 替代不存在的 add 方法，实现分布式锁语义
+            if (!$this->cache->has($lockKey)) {
+                $this->cache->set($lockKey, 1, 5);
+                $lockAcquired = true;
+            } else {
+                $lockAcquired = false;
+            }
             if ($lockAcquired) {
                 try {
                     $registryClient = $this->app->make(RegistryClient::class, ['rpc']);
