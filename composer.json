@@ -33,7 +33,7 @@
     "extra": {
         "think": {
             "services": [
-                "qs9000\\rpc\\RpcClientService::class"
+                "qs9000\\rpc\\RpcClientService"
             ],
             "config": {
                 "rpc": "src/config/rpc.php"
