@@ -64,39 +64,44 @@ class Connector implements ClientConnector
             $this->createPool($host, $port);
         }
         $pool = $this->poolMap[$nodeKey];
-        /** @var \Swoole\Coroutine\Client $client */
-        $client = $pool->borrow();
 
-        // 增强连接健康检查：检查连接有效性并尝试恢复
-        if (!$client || !$client instanceof \Swoole\Coroutine\Client || !$client->connected || $this->isConnectionUnhealthy($client)) {
-            // 连接无效，从池中移除并尝试重新创建
-            if ($client && $client instanceof \Swoole\Coroutine\Client) {
-                $pool->return($client);
-            }
-            $pool->close();
-            unset($this->poolMap[$nodeKey]);
-            // 重新创建池并借用
-            $this->createPool($host, $port);
-            $pool = $this->poolMap[$nodeKey];
-            $client = $pool->borrow();
-            if (!$client || !$client->connected) {
-                throw new RpcClientException("无法建立到 {$nodeKey} 的连接");
-            }
-        }
+        /** @var \Swoole\Coroutine\Client|null $client */
+        $client = null;
 
         try {
+            $client = $pool->borrow();
+
+            // 连接健康检查：检测无效连接并尝试重建
+            if (!$client || !$client->connected || $this->isConnectionUnhealthy($client)) {
+                // 归还无效连接，让连接池自行销毁
+                if ($client) {
+                    $pool->return($client);
+                    $client = null;
+                }
+                $pool->close();
+                unset($this->poolMap[$nodeKey]);
+                $this->createPool($host, $port);
+                $pool = $this->poolMap[$nodeKey];
+                $client = $pool->borrow();
+                if (!$client || !$client->connected) {
+                    throw new RpcClientException("无法建立到 {$nodeKey} 的连接");
+                }
+            }
+
             // 执行用户回调
             $result = $callback($client);
             $circuitBreaker->recordSuccess($circuitBreakerName);
             return $result;
         } catch (Throwable $e) {
-            // 记录失败状态并重新抛出异常
-            $circuitBreaker->recordFailure($circuitBreakerName);
+            // 熔断器记录失败状态并重新抛出
+            if (isset($circuitBreakerName)) {
+                $circuitBreaker->recordFailure($circuitBreakerName);
+            }
             throw $e;
         } finally {
-            // 确保客户端被归还到池中
-            // 即使回调抛出异常，也会执行归还操作
-            if ($client !== null && $client instanceof \Swoole\Coroutine\Client && $client->connected) {
+            // 必须归还连接，即使已断开——连接池会自行处理断开连接的清理
+            // 否则连接池计数不会减少，导致连接泄漏
+            if ($client !== null) {
                 $pool->return($client);
             }
         }

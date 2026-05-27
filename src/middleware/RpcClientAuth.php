@@ -6,11 +6,17 @@ namespace qs9000\rpc\middleware;
 
 use qs9000\rpc\contract\MiddlewareInterface;
 use qs9000\rpc\RpcException;
+use think\App;
 use think\swoole\rpc\Protocol;
-use think\facade\Cache;
 
 class RpcClientAuth implements MiddlewareInterface
 {
+    private App $app;
+
+    public function __construct(App $app)
+    {
+        $this->app = $app;
+    }
 
     /**
      * 处理协议请求，注入服务器身份验证信息
@@ -26,16 +32,16 @@ class RpcClientAuth implements MiddlewareInterface
     public function handle(Protocol $protocol, \Closure $next): mixed
     {
         // 验证服务器名称配置有效性
-        $serverName = config('app.name');
+        $serverName = $this->app->config->get('app.name');
         if ($serverName === null || $serverName === '') {
             throw new RpcException('服务器名称未配置，请在config/app.php中配置app.name');
         }
 
         // 获取当前时间戳用于签名生成
         $timestamp = time();
-        $cache = config('rpc.server.auth.cache', 'system');
+        $cache = $this->app->config->get('rpc.server.auth.cache', 'system');
         // 验证服务器密钥配置有效性
-        $secret = Cache::store($cache)->get("server_{$serverName}");
+        $secret = $this->app->cache->store($cache)->get("server_{$serverName}");
         if ($secret === null || $secret === '') {
             throw new RpcException('服务器密钥未配置，请在系统管理中配置服务器密钥');
         }

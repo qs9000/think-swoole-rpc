@@ -4,9 +4,8 @@ declare(strict_types=1);
 
 namespace qs9000\rpc;
 
+use think\App;
 use think\facade\Log;
-use think\facade\Config;
-use think\facade\Cache;
 
 /**
  * 全局分布式熔断器（Circuit Breaker based on Redis）
@@ -31,6 +30,8 @@ class CircuitBreaker
     protected const CACHE_PREFIX = 'circuit_breaker:';
     protected const SERVICES_SET_KEY = 'circuit_breaker:services';   // Redis Set 存储服务名列表
 
+    private App $app;
+
     /** @var int 触发熔断的连续失败次数阈值 */
     protected int $failureThreshold = 5;
 
@@ -51,18 +52,20 @@ class CircuitBreaker
     /**
      * 构造函数
      *
+     * @param App $app
      * @param array $config 配置项，支持：
      *   - failure_threshold: 失败阈值，默认5
      *   - success_threshold: 成功阈值，默认3
      *   - timeout: 熔断超时秒数，默认60
      *   - redis: Redis 配置数组，同 think\cache\driver\Redis 的配置
      */
-    public function __construct(array $config = [])
+    public function __construct(App $app, array $config = [])
     {
+        $this->app = $app;
+
         // 合并配置
-        if (empty($config) && function_exists('config')) {
-            $rpcConfig = config('rpc.client.circuitbreaker', []);
-            $config = array_merge($rpcConfig, $config);
+        if (empty($config)) {
+            $config = $this->app->config->get('rpc.client.circuitbreaker', []);
         }
 
         $this->failureThreshold = max(1, $config['failure_threshold'] ?? 5);
@@ -74,7 +77,7 @@ class CircuitBreaker
             $this->redis = null;
             $this->redisAvailable = false;
         } else {
-            $this->redis = Cache::store($cache)->handler();
+            $this->redis = $this->app->cache->store($cache)->handler();
         }
     }
 

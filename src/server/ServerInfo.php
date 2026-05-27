@@ -5,9 +5,16 @@ declare(strict_types=1);
 namespace qs9000\rpc\server;
 
 use qs9000\rpc\contract\ServerInfoInterface;
+use think\App;
 
 class ServerInfo implements ServerInfoInterface
 {
+    private App $app;
+
+    public function __construct(App $app)
+    {
+        $this->app = $app;
+    }
     /**
      * @inheritDoc
      */
@@ -43,11 +50,11 @@ class ServerInfo implements ServerInfoInterface
         if ($diskTotal !== false && $diskFree !== false && $diskTotal > 0) {
             $usagePercent = round(($diskTotal - $diskFree) / $diskTotal * 100, 1);
         }
-        $excludePrivate = config('rpc.server.exclude_private', false);
+        $excludePrivate = $this->app->config->get('rpc.server.exclude_private', false);
         return [
             'server' => [
-                'ip'       => config('app.host_ip') ?? $this->getServerIp($excludePrivate) ?? 'unknown',
-                'hostname' => config('app.name') ?? 'unknown',
+                'ip'       => $this->app->config->get('app.host_ip') ?? $this->getServerIp($excludePrivate) ?? 'unknown',
+                'hostname' => $this->app->config->get('app.name', 'unknown'),
                 'arch'     => php_uname(),
                 'software' => $_SERVER['SERVER_SOFTWARE']  ?? 'unknown',
                 'port'     => $_SERVER['SERVER_PORT']      ?? null,
@@ -145,7 +152,7 @@ class ServerInfo implements ServerInfoInterface
      */
     public function getServerIp(bool $excludePrivate = false): string
     {
-        $hostIp = config('app.host_ip');
+        $hostIp = $this->app->config->get('app.host_ip');
         if ($hostIp) {
             return $hostIp;
         }

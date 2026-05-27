@@ -5,22 +5,29 @@ declare(strict_types=1);
 namespace qs9000\rpc\middleware;
 
 use qs9000\rpc\contract\MiddlewareInterface;
-use think\facade\Cache;
+use think\App;
 use think\facade\Log;
 use think\swoole\rpc\Protocol;
 
 // 优化点 1: 修正类名拼写错误 RateLimt -> RateLimit
 class RpcServerRateLimit implements MiddlewareInterface
 {
+    private App $app;
+
     // 优化点 2: 提取常量，提高可维护性
     private const DEFAULT_CACHE_STORE = 'file';
     private const DEFAULT_LIMIT = 100;
     private const DEFAULT_INTERVAL = 60;
     private const CACHE_KEY_PREFIX = 'rpc_rate_limit';
 
+    public function __construct(App $app)
+    {
+        $this->app = $app;
+    }
+
     public function handle(Protocol $protocol, \Closure $next): mixed
     {
-        $config = config('rpc.server.rate_limit');
+        $config = $this->app->config->get('rpc.server.rate_limit');
 
         // 边界条件检查：确保配置是数组且启用
         if (!is_array($config) || !($config['enable'] ?? false)) {
@@ -77,13 +84,13 @@ class RpcServerRateLimit implements MiddlewareInterface
         $context = $protocol->getContext();
         $serverName = $context['server_name'] ?? 'unknown';
         $method = $protocol->getMethod() ?? 'unknown';
-        $currentServer = config('app.name') ?? 'unknown';
+        $currentServer = $this->app->config->get('app.name', 'unknown');
         // 使用 md5 确保 Key 长度固定且无特殊字符，适合所有缓存驱动
         $key = md5(self::CACHE_KEY_PREFIX . ":{$currentServer}:{$serverName}:{$method}");
 
         try {
             // 3. 获取缓存实例
-            $cache = Cache::store($storeName);
+            $cache = $this->app->cache->store($storeName);
 
             // 4. 原子递增计数
             // 注意：ThinkPHP 的 inc 在 Key 不存在时会创建 Key 并设为 1，但通常不设置过期时间

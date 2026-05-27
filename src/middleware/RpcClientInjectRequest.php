@@ -5,11 +5,14 @@ declare(strict_types=1);
 namespace qs9000\rpc\middleware;
 
 use qs9000\rpc\contract\MiddlewareInterface;
+use think\App;
 use think\swoole\rpc\Protocol;
 use think\Request;
 
 class RpcClientInjectRequest implements MiddlewareInterface
 {
+    private App $app;
+
     /**
      * 定义需要从 Request 注入到 Context 的字段映射
      * key 为 Request 中的属性名,value为 Context 中的键名
@@ -23,6 +26,11 @@ class RpcClientInjectRequest implements MiddlewareInterface
         'user_role'  => 'user_role',
     ];
 
+    public function __construct(App $app)
+    {
+        $this->app = $app;
+    }
+
     /**
      * 处理rpc协议请求，请求中的信息注入到 Context 中。
      *
@@ -35,7 +43,7 @@ class RpcClientInjectRequest implements MiddlewareInterface
         $context = $protocol->getContext();
 
         try {
-            $request = request();
+            $request = $this->app->request;
         } catch (\Throwable $e) {
             return $next($protocol);
         }

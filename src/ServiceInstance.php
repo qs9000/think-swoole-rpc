@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace qs9000\rpc;
 
-use think\facade\Config;
 use qs9000\rpc\contract\ServiceInstanceInterface;
 
 /**

@@ -4,22 +4,23 @@ declare(strict_types=1);
 
 namespace qs9000\rpc\loadbalancer;
 
-use think\facade\Config;
+use think\App;
 
 /**
  * 负载均衡器工厂
  */
 class LoadBalancerFactory
 {
+    private App $app;
     protected array $strategies = [];
 
-    public function __construct()
+    public function __construct(App $app)
     {
-        if (function_exists('config')) {
-            $strategies = config('rpc.discovery.strategies', []);
-            foreach ($strategies as $name => $class) {
-                $this->strategies[$name] = $class;
-            }
+        $this->app = $app;
+
+        $strategies = $this->app->config->get('rpc.discovery.strategies', []);
+        foreach ($strategies as $name => $class) {
+            $this->strategies[$name] = $class;
         }
     }
 

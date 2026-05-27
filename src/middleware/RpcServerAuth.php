@@ -4,9 +4,8 @@ declare(strict_types=1);
 
 namespace qs9000\rpc\middleware;
 
-use think\facade\Cache;
-use think\facade\Config;
 use qs9000\rpc\contract\MiddlewareInterface;
+use think\App;
 use think\swoole\rpc\Protocol;
 
 /**
@@ -14,6 +13,12 @@ use think\swoole\rpc\Protocol;
  */
 class RpcServerAuth implements MiddlewareInterface
 {
+    private App $app;
+
+    public function __construct(App $app)
+    {
+        $this->app = $app;
+    }
 
     /**
      * 处理 RPC 请求的认证逻辑
@@ -25,7 +30,7 @@ class RpcServerAuth implements MiddlewareInterface
      */
     public function handle(Protocol $protocol, \Closure $next): mixed
     {
-        $config = Config::get('rpc.server.auth');
+        $config = $this->app->config->get('rpc.server.auth');
 
         // 如果未启用认证，直接放行
         if (!($config['enable'] ?? false)) {
@@ -68,10 +73,10 @@ class RpcServerAuth implements MiddlewareInterface
         // 获取签名和时间戳
         $sign = isset($content['sign']) ? (string) $content['sign'] : '';
         $timestamp = isset($content['timestamp']) ? (int) $content['timestamp'] : 0;
-        $cache = config('rpc.server.auth.cache', 'system');
+        $cache = $this->app->config->get('rpc.server.auth.cache', 'system');
         // 获取缓存实例
         try {
-            $cache = Cache::store($cache);
+            $cache = $this->app->cache->store($cache);
         } catch (\Exception $e) {
             throw new \qs9000\rpc\RpcException('缓存未配置system');
         }
