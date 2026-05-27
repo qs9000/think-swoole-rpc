@@ -73,17 +73,23 @@ class Connector implements ClientConnector
         }
         $pool = $this->poolMap[$nodeKey];
 
+
         /** @var \Swoole\Coroutine\Client|null $client */
         $client = null;
 
+        // 标记客户端是否来自连接池，决定 finally 中是归还还是直接关闭
+        $fromPool = false;
+
         try {
             $client = $pool->borrow();
+            $fromPool = true;
 
             // 连接健康检查：检测无效连接并尝试重建
             if (!$client || !$client->connected || $this->isConnectionUnhealthy($client)) {
                 // 归还无效连接，让连接池自行销毁
                 if ($client) {
                     $pool->return($client);
+                    $fromPool = false;
                     $client = null;
                 }
                 $pool->close();
@@ -91,12 +97,15 @@ class Connector implements ClientConnector
                 $this->createPool($host, $port);
                 $pool = $this->poolMap[$nodeKey];
                 $client = $pool->borrow();
+                $fromPool = true;
                 if (!$client || !$client->connected) {
-                    $errInfo = '';
+                    // 连接池两次都失败，使用直接连接兜底
                     if ($client) {
-                        $errInfo = sprintf(', errCode=%d, errMsg=%s', $client->errCode, $client->errMsg ?: 'none');
+                        $pool->return($client);
+                        $client = null;
                     }
-                    throw new RpcClientException("无法建立到 {$nodeKey} 的连接{$errInfo}，请确认 Swoole Coroutine 环境正常且目标服务已启动");
+                    $fromPool = false;
+                    $client = $this->createDirectClient($host, $port);
                 }
             }
 
@@ -111,10 +120,14 @@ class Connector implements ClientConnector
             }
             throw $e;
         } finally {
-            // 必须归还连接，即使已断开——连接池会自行处理断开连接的清理
-            // 否则连接池计数不会减少，导致连接泄漏
+            // 从连接池借用的必须归还，防止连接泄漏
+            // 直接创建的客户端直接关闭
             if ($client !== null) {
-                $pool->return($client);
+                if ($fromPool) {
+                    $pool->return($client);
+                } else {
+                    $client->close();
+                }
             }
         }
     }
@@ -164,6 +177,26 @@ class Connector implements ClientConnector
         $this->poolMap[$nodeKey] = $pool;
 
         return $pool;
+    }
+
+    /**
+     * 直接创建 Swoole\Coroutine\Client 连接（绕过连接池）
+     * 作为连接池无法提供有效连接时的兜底方案，参考 think-swoole Gateway 的实现
+     */
+    protected function createDirectClient(string $host, int $port): \Swoole\Coroutine\Client
+    {
+        $client = new \Swoole\Coroutine\Client(SWOOLE_SOCK_TCP);
+
+        $timeout = $this->poolConfig['timeout'] ?? 5;
+        $client->set($this->poolConfig);
+
+        if (!$client->connect($host, $port, $timeout)) {
+            $errInfo = sprintf('errCode=%d, errMsg=%s', $client->errCode, $client->errMsg ?: 'none');
+            $client->close();
+            throw new RpcClientException("无法建立到 {$host}:{$port} 的直接连接，{$errInfo}，请确认 Swoole Coroutine 环境正常且目标服务已启动");
+        }
+
+        return $client;
     }
 
     /**
