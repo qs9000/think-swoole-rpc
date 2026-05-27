@@ -386,8 +386,10 @@ class Connector implements ClientConnector
                 return null;
             }
 
+            // 解析 parser 类名（与服务端保持一致的配置）
+            $parserClass = $this->app->config->get('swoole.rpc.server.parser', \think\swoole\rpc\JsonParser::class);
             /** @var ParserInterface $parser */
-            $parser = $this->app->make(ParserInterface::class);
+            $parser = $this->app->make($parserClass, [], true);
 
             $this->localDispatcher = new Dispatcher($parser, $services, $middleware);
         }
@@ -412,8 +414,11 @@ class Connector implements ClientConnector
             return $this->traitSendAndRecv($data, $decoder);
         }
 
+        // 从 Dispatcher 中反射取出 parser（Dispatcher::$parser 是 protected）
+        $rp = new \ReflectionProperty($dispatcher, 'parser');
+        $rp->setAccessible(true);
         /** @var ParserInterface $parser */
-        $parser = $this->app->make(ParserInterface::class);
+        $parser = $rp->getValue($dispatcher);
         $files  = [];
 
         $responsePayload = null;
