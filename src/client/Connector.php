@@ -386,7 +386,10 @@ class Connector implements ClientConnector
                 return null;
             }
 
-            $this->localDispatcher = new Dispatcher($services, $middleware);
+            /** @var ParserInterface $parser */
+            $parser = $this->app->make(ParserInterface::class);
+
+            $this->localDispatcher = new Dispatcher($parser, $services, $middleware);
         }
         return $this->localDispatcher;
     }
