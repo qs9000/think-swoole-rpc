@@ -68,11 +68,13 @@ class RegistryClient implements RegistryClientInterface
             } catch (\Throwable $e) {
                 // 捕获Redis连接相关错误
                 \think\facade\Log::warning("[Registry] 缓存操作失败: " . $e->getMessage());
-                
+
                 // 如果是Redis连接问题，尝试重新初始化缓存实例
-                if (strpos($e->getMessage(), 'Redis server went away') !== false || 
+                if (
+                    strpos($e->getMessage(), 'Redis server went away') !== false ||
                     strpos($e->getMessage(), 'Connection closed') !== false ||
-                    strpos($e->getMessage(), 'Connection lost') !== false) {
+                    strpos($e->getMessage(), 'Connection lost') !== false
+                ) {
                     try {
                         $this->cacheInstance = app()->cache->store($this->cacheStore);
                         // 重试操作
@@ -93,11 +95,13 @@ class RegistryClient implements RegistryClientInterface
             } catch (\Throwable $e) {
                 // 捕获Redis连接相关错误
                 \think\facade\Log::warning("[Registry] 缓存操作失败: " . $e->getMessage());
-                
+
                 // 如果是Redis连接问题，尝试重新初始化缓存实例
-                if (strpos($e->getMessage(), 'Redis server went away') !== false || 
+                if (
+                    strpos($e->getMessage(), 'Redis server went away') !== false ||
                     strpos($e->getMessage(), 'Connection closed') !== false ||
-                    strpos($e->getMessage(), 'Connection lost') !== false) {
+                    strpos($e->getMessage(), 'Connection lost') !== false
+                ) {
                     try {
                         $this->cacheInstance = app()->cache->store($this->cacheStore);
                         // 重试操作
@@ -190,16 +194,17 @@ class RegistryClient implements RegistryClientInterface
         $datas = [];
         $now = time();
 
-        $this->redisScan($pattern, function ($key) use (&$datas, $now) {
-            $this->executeSafely(function ($cache) use ($key, &$datas, $now) {
-                $content = $cache->get($key);
-                if (is_array($content) && !empty($content)) {
-                    $content['health'] = $now - $content['last_heartbeat'] <= $this->heartbeatInterval * 2 ? true : false;
-                    $datas[] = $content;
-                }
-            });
+        $this->redisScan($pattern, function ($keys) use (&$datas, $now) {
+            foreach ($keys as $key) {
+                $this->executeSafely(function ($cache) use ($key, &$datas, $now) {
+                    $content = $cache->get($key);
+                    if (is_array($content) && !empty($content)) {
+                        $content['health'] = $now - $content['last_heartbeat'] <= $this->heartbeatInterval * 2 ? true : false;
+                        $datas[] = $content;
+                    }
+                });
+            }
         });
-
         return $datas;
     }
 

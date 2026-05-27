@@ -124,10 +124,10 @@ class ServiceRegister
                     $this->serversData[] = $serverInfo;
                 }
                 if ($serverName == 'rpc') {
-                    $rpcServersData[] = $serverInfo['server'];
+                    $rpcServersData = $serverInfo['server'];
                     if ($rpcServersData['enable'] ?? false) {
-                        $serverInfo['host'] = $serverIp;
-                        $serverInfo['name'] = $serverName;
+                        $rpcServersData['host'] = $serverIp;
+                        $rpcServersData['name'] = $serverName;
                         $this->serversData[] = $rpcServersData;
                     }
                 }

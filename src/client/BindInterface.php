@@ -15,6 +15,7 @@ class BindInterface
     protected array $services = [];
     protected App $app;
 
+
     public function __construct(App $app)
     {
         if ($rpc = $app->getBasePath() . 'rpc.php') {
@@ -25,18 +26,18 @@ class BindInterface
 
     public function bind(): void
     {
-        if (empty($this->services)) {
-            return;
-        }
-
         try {
 
+            if (empty($this->services)) {
+                return;
+            }
+
+            // 2. 注册 RPC 代理绑定
             $parser = $this->app->make(JsonParser::class);
             $tries = $this->app->config->get('rpc.client.tries') ?? 2;
             $middleware = $this->app->config->get('rpc.client.middleware') ?? [];
 
             foreach ($this->services as $serviceName => $serviceInterface) {
-                // 基本类型检查，确保 serviceInterface 是有效的字符串标识符
                 if (!is_string($serviceInterface) || empty($serviceName)) {
                     continue;
                 }

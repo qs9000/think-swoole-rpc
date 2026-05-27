@@ -37,15 +37,7 @@
             ],
             "config": {
                 "rpc": "src/config/rpc.php"
-            },
-            "event": {
-                "subscribe": [
-                    "qs9000\\rpc\\event\\RpcClientEvent::class"
-                ]
-            },
-            "app": [
-                "qs9000\\rpc\\registry\\rpc.php"
-            ]
+            }
         }
     },
     "config": {
