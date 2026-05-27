@@ -29,7 +29,7 @@ class ServiceInstance implements ServiceInstanceInterface
         $this->name = $data['name'] ?? '';
         $this->host = $data['host'] ?? '127.0.0.1';
         $this->port = (int) ($data['port'] ?? 9501);
-        $this->healthy = (bool) ($data['healthy'] ?? true);
+        $this->healthy = (bool) ($data['healthy'] ?? $data['health'] ?? true);
         $this->weight = (int) ($data['weight'] ?? 100);
         $this->metadata = $data['metadata'] ?? [];
         $this->registeredAt = (int) ($data['registered_at'] ?? time());

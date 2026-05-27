@@ -90,18 +90,20 @@ class ServiceDiscover
             throw new RpcException("获取的RPC服务信息无效: {$serviceName}");
         }
 
+        // 将原始数组转换为 ServiceInstance 对象，供负载均衡器等下游使用
+        $serviceInstances = array_map(fn($item) => is_array($item) ? ServiceInstance::fromArray($item) : $item, $serviceInstances);
+
         if (count($serviceInstances) === 1) {
-            $instance = $serviceInstances[0];
-        } else {
-            $strategy = $this->config['loadbalancer'] ?? 'random';
-            try {
-                $loadBalancer = $this->app->make(LoadBalancerFactory::class)->create($strategy);
-                $instance = $loadBalancer->select($serviceInstances);
-            } catch (\Throwable $e) {
-                throw new RpcException("RPC负载均衡器选择失败: {$serviceName}. Error: " . $e->getMessage(), 0, $e);
-            }
+            return $serviceInstances[0];
         }
-        return ServiceInstance::fromArray($instance);
+
+        $strategy = $this->config['loadbalancer'] ?? 'random';
+        try {
+            $loadBalancer = $this->app->make(LoadBalancerFactory::class)->create($strategy);
+            return $loadBalancer->select($serviceInstances);
+        } catch (\Throwable $e) {
+            throw new RpcException("RPC负载均衡器选择失败: {$serviceName}. Error: " . $e->getMessage(), 0, $e);
+        }
     }
 
     /**
