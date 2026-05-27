@@ -145,6 +145,7 @@ class Connector implements ClientConnector
         $poolConfig = Pool::pullPoolConfig($this->poolConfig);
 
         $pool = new ConnectionPool($poolConfig, new Client(), $config);
+        $pool->init();
 
         // 存储池实例
         $nodeKey = $this->generateNodeKey($host, $port);
