@@ -53,6 +53,8 @@ return [
     'client' => [
         // 重试次数 - 失败后的自动重试次数
         'tries' => 2,
+        // 本机直调开关 - 当目标服务 host:port 指向本机时，绕过 TCP 直接进程内调用
+        'enable_local_call' => true,
         'pool' => [
             'min_active' => 0,
             'max_active' => 10,
