@@ -84,7 +84,11 @@ class Connector implements ClientConnector
                 $pool = $this->poolMap[$nodeKey];
                 $client = $pool->borrow();
                 if (!$client || !$client->connected) {
-                    throw new RpcClientException("无法建立到 {$nodeKey} 的连接");
+                    $errInfo = '';
+                    if ($client) {
+                        $errInfo = sprintf(', errCode=%d, errMsg=%s', $client->errCode, $client->errMsg ?: 'none');
+                    }
+                    throw new RpcClientException("无法建立到 {$nodeKey} 的连接{$errInfo}，请确认 Swoole Coroutine 环境正常且目标服务已启动");
                 }
             }
 
