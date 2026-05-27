@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace qs9000\rpc\middleware;
 
 use qs9000\rpc\contract\MiddlewareInterface;
+use think\App;
 use think\swoole\rpc\Protocol;
 
 /**
@@ -14,6 +15,8 @@ use think\swoole\rpc\Protocol;
  */
 class RpcServerInjectRequest implements MiddlewareInterface
 {
+    private App $app;
+
     /**
      * 定义需要从 Context 注入到 Request 的字段映射
      * key 为 Context 中的键名，value 为 Request 中的属性名
@@ -25,6 +28,11 @@ class RpcServerInjectRequest implements MiddlewareInterface
         'company_id' => 'company_id',
         'user_role' => 'user_role',
     ];
+
+    public function __construct(App $app)
+    {
+        $this->app = $app;
+    }
 
     public function handle(Protocol $protocol, \Closure $next): mixed
     {
@@ -43,7 +51,7 @@ class RpcServerInjectRequest implements MiddlewareInterface
         $context['traceId'] = $traceId;
 
         // 获取请求对象
-        $request = app()->request;
+        $request = $this->app->request;
 
         // 注入 traceId
         $request->traceId = $traceId;

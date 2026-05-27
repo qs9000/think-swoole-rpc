@@ -22,9 +22,9 @@ class Connector implements ClientConnector
     protected array $poolConfig;
     protected string $serviceName;
     protected App $app;
-    public function __construct(string $serviceName)
+    public function __construct(App $app, string $serviceName)
     {
-        $this->app = app();
+        $this->app = $app;
         // 获取配置，如果不存在则使用空数组，确保后续处理安全
         $this->poolConfig = $this->app->config->get('rpc.client.pool') ?? [];
         $this->serviceName = $serviceName;

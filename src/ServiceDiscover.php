@@ -6,6 +6,7 @@ namespace qs9000\rpc;
 
 use qs9000\rpc\contract\ServiceInstanceInterface;
 use qs9000\rpc\loadbalancer\LoadBalancerFactory;
+use think\App;
 use think\cache\Driver;
 
 /**
@@ -16,7 +17,7 @@ use think\cache\Driver;
 class ServiceDiscover
 {
     private Driver $cache;
-    private mixed $app;
+    private App $app;
     private array $config;
 
     /**
@@ -24,9 +25,9 @@ class ServiceDiscover
      *
      * 初始化应用实例、加载 RPC 发现配置以及初始化缓存驱动。
      */
-    public function __construct()
+    public function __construct(App $app)
     {
-        $this->app = app();
+        $this->app = $app;
         $this->config = $this->app->config->get('rpc.discovery', []);
         $this->cache = $this->app->cache->store($this->config['cache'] ?? 'file');
     }
@@ -56,7 +57,7 @@ class ServiceDiscover
             if ($lockAcquired) {
                 try {
                     $registryClient = $this->app->make(RegistryClient::class, ['rpc']);
-                    $serviceInstances = $registryClient->discover('rpc', $serviceName);
+                    $serviceInstances = $registryClient->discover($serviceName);
                     if (!is_array($serviceInstances) || empty($serviceInstances)) {
                         throw new RpcException("获取的RPC服务信息无效: {$serviceName}");
                     }
@@ -138,7 +139,7 @@ class ServiceDiscover
     {
         try {
             $registryClient = $this->app->make(RegistryClient::class, ['rpc']);
-            $serviceInstances = $registryClient->discover('rpc', $serviceName);
+            $serviceInstances = $registryClient->discover($serviceName);
             if (!is_array($serviceInstances) || empty($serviceInstances)) {
                 return false;
             }

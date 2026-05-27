@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace qs9000\rpc;
 
-use think\facade\Config;
+use think\App;
 use qs9000\rpc\registry\RegistryClientInterface;
 use Swoole\Coroutine;
 
@@ -23,32 +23,32 @@ use Swoole\Coroutine;
  */
 class RegistryClient implements RegistryClientInterface
 {
+    private App $app;
     private string $cacheKeyPrefix;
     private string $cacheStore;
     private int $heartbeatInterval;
-    private string $type;
     private mixed $cacheInstance;
 
     /**
      *@inheritDoc
      */
-    public function __construct(string $type = 'rpc')
+    public function __construct(App $app, string $type = 'rpc')
     {
-        $this->type = $type;
+        $this->app = $app;
         $this->cacheKeyPrefix = match ($type) {
             'rpc' => 'registry:rpc:',
             'server' => 'registry:server:',
             default => throw new \Exception('非法的注册类型'),
         };
-        $this->cacheStore = Config::get('rpc.registry.cache');
-        $this->heartbeatInterval = Config::get("rpc.registry.{$type}.heartbeat_interval", 30);
+        $this->cacheStore = $this->app->config->get('rpc.registry.cache', 'file');
+        $this->heartbeatInterval = $this->app->config->get("rpc.registry.{$type}.heartbeat_interval", 30);
 
         // 初始化缓存实例
-        $this->cacheInstance = app()->cache->store($this->cacheStore);
+        $this->cacheInstance = $this->app->cache->store($this->cacheStore);
     }
 
     /**
-     * 执行Redis操作的协程安全包装器
+     * 执行缓存操作的包装器
      * 
      * 使用协程锁确保同一时间只有一个协程操作Redis连接
      */
@@ -76,7 +76,7 @@ class RegistryClient implements RegistryClientInterface
                     strpos($e->getMessage(), 'Connection lost') !== false
                 ) {
                     try {
-                        $this->cacheInstance = app()->cache->store($this->cacheStore);
+                        $this->cacheInstance = $this->app->cache->store($this->cacheStore);
                         // 重试操作
                         return $operation($this->cacheInstance);
                     } catch (\Throwable $retryException) {
@@ -103,7 +103,7 @@ class RegistryClient implements RegistryClientInterface
                     strpos($e->getMessage(), 'Connection lost') !== false
                 ) {
                     try {
-                        $this->cacheInstance = app()->cache->store($this->cacheStore);
+                        $this->cacheInstance = $this->app->cache->store($this->cacheStore);
                         // 重试操作
                         return $operation($this->cacheInstance);
                     } catch (\Throwable $retryException) {

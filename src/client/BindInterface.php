@@ -18,59 +18,75 @@ class BindInterface
 
     public function __construct(App $app)
     {
-        if ($rpc = $app->getBasePath() . 'rpc.php') {
-            $this->services = (array) include $rpc;
+        $rpcPath = $app->getBasePath() . 'rpc.php';
+        if (is_file($rpcPath)) {
+            $this->services = (array) include $rpcPath;
+            Log::info("[BindInterface] 加载 rpc.php 成功, 共 " . count($this->services) . " 个服务: " . implode(', ', array_keys($this->services)));
+        } else {
+            Log::warning("[BindInterface] rpc.php 文件不存在: {$rpcPath}");
         }
         $this->app = $app;
     }
 
     public function bind(): void
     {
-        try {
+        if (empty($this->services)) {
+            Log::warning("[BindInterface] services 为空，跳过绑定");
+            return;
+        }
 
-            if (empty($this->services)) {
-                return;
+        Log::info("[BindInterface] 开始绑定 " . count($this->services) . " 个 RPC 服务");
+
+        $parser   = $this->app->make(JsonParser::class);
+        $tries    = $this->app->config->get('rpc.client.tries') ?? 2;
+        $middleware = $this->app->config->get('rpc.client.middleware') ?? [];
+
+        foreach ($this->services as $serviceName => $serviceInterfaces) {
+            if (empty($serviceName)) {
+                Log::warning("[BindInterface] 跳过空服务名: " . var_export($serviceInterfaces, true));
+                continue;
             }
 
-            // 2. 注册 RPC 代理绑定
-            $parser = $this->app->make(JsonParser::class);
-            $tries = $this->app->config->get('rpc.client.tries') ?? 2;
-            $middleware = $this->app->config->get('rpc.client.middleware') ?? [];
+            // 兼容两种格式：'serviceName' => 'Interface' 或 'serviceName' => ['Interface1', 'Interface2']
+            $interfaces = is_array($serviceInterfaces) ? $serviceInterfaces : [$serviceInterfaces];
 
-            foreach ($this->services as $serviceName => $serviceInterface) {
-                if (!is_string($serviceInterface) || empty($serviceName)) {
+            // 同一服务名的多个接口共享 Connector 和 Gateway
+            $connector = $this->app->make(Connector::class, ['serviceName' => $serviceName]);
+            $gateway   = new Gateway($connector, $parser, $tries);
+
+            foreach ($interfaces as $interface) {
+                if (!is_string($interface)) {
+                    Log::warning("[BindInterface] 跳过非法接口: {$serviceName} => " . var_export($interface, true));
                     continue;
                 }
 
-                $this->bindSingleService($serviceName, $serviceInterface, $parser, $tries, $middleware);
+                try {
+                    $this->bindInterface($serviceName, $interface, $gateway, $middleware);
+                    Log::info("[BindInterface] 绑定成功: {$serviceName} => {$interface}");
+                } catch (Throwable $e) {
+                    Log::error("[BindInterface] 绑定失败 [{$serviceName} => {$interface}]: " . $e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine());
+                }
             }
-        } catch (Throwable $e) {
-            Log::error("RPC客户端绑定失败: " . $e->getMessage() . " in " . $e->getFile() . ":" . $e->getLine());
         }
+
+        Log::info("[BindInterface] 绑定完成");
     }
 
     /**
-     * 绑定单个服务
+     * 绑定单个接口到容器
      *
-     * @param string $serviceName
-     * @param string $serviceInterface
-     * @param JsonParser $parser
-     * @param int $tries
-     * @param array $middleware
+     * @param string $serviceName      服务名称
+     * @param string $serviceInterface 接口类名
+     * @param Gateway $gateway         已创建的网关实例（同服务共享）
+     * @param array $middleware        中间件配置
      * @return void
      */
-    protected function bindSingleService(
+    protected function bindInterface(
         string $serviceName,
         string $serviceInterface,
-        JsonParser $parser,
-        int $tries,
+        Gateway $gateway,
         array $middleware
     ): void {
-        // 创建连接器并连接
-        $connector = $this->app->make(Connector::class, ['serviceName' => $serviceName]);
-        // 创建网关
-        $gateway = new Gateway($connector, $parser, $tries);
-
         // 绑定到容器
         $this->app->bind($serviceInterface, function (App $app) use ($gateway, $middleware, $serviceName, $serviceInterface) {
             $proxyClass = Proxy::getClassName($serviceName, $serviceInterface);

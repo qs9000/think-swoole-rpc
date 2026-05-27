@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace qs9000\rpc\registry;
 
+use think\App;
+
 /**
  * 服务注册中心客户端接口
  *
@@ -14,9 +16,10 @@ interface RegistryClientInterface
 
     /**
      * 构造函数
-     * @param string $type 服务类型 可选参数，默认为 'rpc'
+     * @param App    $app  应用实例
+     * @param string $type 服务类型，默认为 'rpc'
      */
-    public function __construct(string $type='rpc');
+    public function __construct(App $app, string $type = 'rpc');
     /**
      * 注册服务实例
      *
