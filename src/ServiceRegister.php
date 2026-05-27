@@ -118,10 +118,18 @@ class ServiceRegister
                 if (!is_array($serverInfo)) {
                     continue;
                 }
-                if (in_array($serverName, ['http', 'websocket', 'rpc'], true) && $serverInfo['enable']) {
+                if (in_array($serverName, ['http', 'websocket'], true) && $serverInfo['enable']) {
                     $serverInfo['host'] = $serverIp;
                     $serverInfo['name'] = $serverName;
                     $this->serversData[] = $serverInfo;
+                }
+                if ($serverName == 'rpc') {
+                    $rpcServersData[] = $serverInfo['server'];
+                    if ($rpcServersData['enable'] ?? false) {
+                        $serverInfo['host'] = $serverIp;
+                        $serverInfo['name'] = $serverName;
+                        $this->serversData[] = $rpcServersData;
+                    }
                 }
             }
 
